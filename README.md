@@ -1,6 +1,6 @@
 # scrcpy_flutter
 
-一个基于 scrcpy server 的可嵌入式 Flutter Android 设备显示与控制组件。长期目标是实现由 Flutter 渲染和管理的低延迟多设备墙。
+一个基于 scrcpy server 的可嵌入式 Flutter Android 设备显示与控制插件。它首先是供其他 Flutter 应用依赖的插件包，仓库中的 example 只用于演示和验收。长期目标是实现由 Flutter 渲染和管理的低延迟多设备墙。
 
 项目目前处于架构设计和技术原型阶段。仓库中的平台代码仍然是 Flutter 插件模板，scrcpy 会话、视频管线、控制协议和设备墙 API 尚未实现。
 

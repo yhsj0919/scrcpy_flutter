@@ -33,6 +33,98 @@ Flutter Stack
 
 本项目不会使用纯 Dart 重写 scrcpy，也不会把 scrcpy 的 SDL 窗口嵌入 Flutter。
 
+## 插件优先原则
+
+本仓库交付物是 Flutter plugin/package，不是绑定特定业务界面的独立设备管理应用。`example/` 只承担演示、调试、集成测试和性能测试，不允许产品核心逻辑只存在于 example 中。
+
+插件需要遵守以下边界：
+
+- 所有对外能力从 `lib/scrcpy_flutter.dart` 或明确标记的公开库导出，宿主不得导入 `lib/src`。
+- ADB、scrcpy server、视频后端和控制协议隐藏在稳定 Dart API 后面。
+- UI 采用可组合 Widget；不强制宿主使用特定路由、状态管理、主题、窗口尺寸或依赖注入方案。
+- 同时支持无 UI 的设备发现、文件传输、批量任务等服务 API，以及可选的视频/控制 Widget。
+- 每个会话、Player、texture、ADB transport 和批量任务都有明确所有者及 `dispose/close/cancel` 语义。
+- 必须支持同一宿主进程内创建多个插件实例和多个 Session，禁止依赖只能存在一次的全局可变状态。
+- 插件不得擅自退出宿主、修改全局 PATH、结束非本插件进程、覆盖宿主日志策略或持久化敏感信息。
+- scrcpy server、FVP/libmdk 等二进制或资源必须通过插件可复现地打包、定位和校验；同时允许高级宿主显式覆盖路径。
+- 插件的 Windows 原生符号、MethodChannel/EventChannel 名称、临时路径、SCID 和端口必须避免与其他插件或实例冲突。
+- 平台不支持时通过能力查询和结构化错误返回，不在加载插件时直接崩溃。
+
+拟定的公开层次：
+
+```text
+scrcpy_flutter.dart
+  |-- ScrcpyClient              插件入口、能力查询和全局资源
+  |-- AdbDeviceService          发现、连接、配对和设备信息
+  |-- ScrcpySession             单个视频/控制会话
+  |-- ScrcpyVideoController     视频状态和画质配置
+  |-- ScrcpyVideoView           可嵌入视频 Widget
+  |-- ScrcpyInputRegion         可选控制覆盖层
+  |-- AdbFileService            文件管理
+  `-- AdbBatchTask              可取消的批量操作及逐设备结果
+```
+
+具体命名将在 P0 API 设计中确认，本文只确定职责边界。
+
+## ADB 模块边界
+
+ADB 有必要从 scrcpy 功能中抽离，但第一阶段不拆成独立 Git 仓库或立即发布独立 pub 包。建议在同一仓库内建立独立 package/模块，通过接口被 `scrcpy_flutter` 依赖；API 和跨平台实现稳定后，再决定是否对外发布。
+
+推荐结构：
+
+```text
+packages/
+  adb_client/                 与 scrcpy 无关的 ADB 领域 API
+    lib/
+      adb_client.dart
+      src/model/              device、endpoint、pairing、task result
+      src/service/            discover、connect、shell、sync、package
+      src/transport/          transport 抽象
+    test/
+
+  adb_client_process/         Windows/macOS/Linux 的 adb 可执行文件后端
+    lib/
+    test/
+
+scrcpy_flutter/               当前插件
+  lib/
+    src/scrcpy/               server、协议、视频、控制
+  仅依赖 adb_client 的公开接口
+```
+
+未来可增加但不提前实现：
+
+```text
+adb_client_android_usb        Android USB Host ADB transport
+adb_client_ohos               HarmonyOS 网络/USB transport
+adb_client_web                WebUSB/Tango ADB transport
+```
+
+ADB 核心职责：
+
+- 设备发现、USB/网络状态、connect/disconnect 和 pairing；
+- shell 命令的结构化执行、超时、取消、stdout/stderr/exit code；
+- sync 协议或 push/pull 文件传输；
+- APK 安装/卸载和包管理；
+- 设备属性、运行状态和批量任务基础设施；
+- transport 能力查询、错误模型、日志脱敏和密钥接口。
+
+scrcpy 插件职责：
+
+- 选择并部署匹配版本的 scrcpy server；
+- 创建 tunnel/forward/reverse 及 scrcpy socket；
+- 解析 scrcpy 视频、音频、设备消息和控制协议；
+- 视频后端、Flutter texture、输入映射和 Session 生命周期；
+- 通过 ADB 抽象调用 shell、push 和端口转发，不直接解析 `adb.exe` 输出。
+
+必须避免的耦合：
+
+- ADB 模块不得依赖 FVP、Flutter Widget 或 scrcpy server 参数。
+- scrcpy 模块不得到处直接调用 `Process.run('adb', ...)`。
+- 公共 API 不返回平台 Process、Socket、USBDevice 等后端对象。
+- 不把 shell 字符串拼接当作所有平台的统一 API；命令、参数和 stdin 应结构化传递。
+- 不为了未来 Web/移动端，在 P0 就实现完整 ADB wire protocol；先用 transport 抽象和桌面 process 后端交付 Windows。
+
 ## 已确认的上游能力
 
 ### scrcpy
