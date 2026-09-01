@@ -6,6 +6,7 @@ enum AdbDeviceState {
   bootloader,
   sideload,
   noPermissions,
+  paired,
   unknown,
 }
 
@@ -20,6 +21,7 @@ final class AdbDevice {
     this.model,
     this.device,
     this.transportId,
+    this.lastSeenAt,
     this.attributes = const <String, String>{},
   });
 
@@ -30,7 +32,10 @@ final class AdbDevice {
   final String? model;
   final String? device;
   final String? transportId;
+  final DateTime? lastSeenAt;
   final Map<String, String> attributes;
+
+  bool get isReady => state == AdbDeviceState.device;
 
   /// Stable enough for logs while avoiding disclosure of the actual serial.
   String get redactedSerial {

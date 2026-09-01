@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -51,6 +52,8 @@ class FakeConnectionAdbClient
     implements AdbDeviceService, AdbConnectionService {
   AdbEndpoint? connected;
   AdbEndpoint? disconnected;
+  AdbEndpoint? paired;
+  String? receivedPairingCode;
 
   @override
   Future<List<AdbDevice>> listDevices({
@@ -74,7 +77,125 @@ class FakeConnectionAdbClient
     AdbEndpoint endpoint,
     String pairingCode, {
     AdbCancellationToken? cancellationToken,
-  }) async {}
+  }) async {
+    paired = endpoint;
+    receivedPairingCode = pairingCode;
+  }
+}
+
+class FakeUnifiedDiscoveryAdbClient
+    implements AdbDeviceService, AdbMdnsDiscoveryService {
+  @override
+  Future<List<AdbDevice>> listDevices({
+    AdbCancellationToken? cancellationToken,
+  }) async => <AdbDevice>[
+    AdbDevice(
+      serial: '192.0.2.10:41001',
+      state: AdbDeviceState.device,
+      connectionType: AdbConnectionType.network,
+      lastSeenAt: DateTime(2026, 9, 1, 12),
+    ),
+  ];
+
+  @override
+  Future<List<AdbMdnsService>> discoverMdnsServices({
+    AdbCancellationToken? cancellationToken,
+  }) async => const <AdbMdnsService>[
+    AdbMdnsService(
+      name: 'online',
+      type: AdbMdnsServiceType.connect,
+      endpoint: AdbEndpoint(host: '192.0.2.10', port: 41001),
+    ),
+    AdbMdnsService(
+      name: 'paired',
+      type: AdbMdnsServiceType.connect,
+      endpoint: AdbEndpoint(host: '192.0.2.20', port: 41001),
+    ),
+    AdbMdnsService(
+      name: 'paired',
+      type: AdbMdnsServiceType.connect,
+      endpoint: AdbEndpoint(host: '192.0.2.20', port: 42002),
+    ),
+    AdbMdnsService(
+      name: 'waiting',
+      type: AdbMdnsServiceType.pairing,
+      endpoint: AdbEndpoint(host: '192.0.2.30', port: 37123),
+    ),
+  ];
+}
+
+class FakeVideoConnector implements ScrcpyVideoConnector {
+  final connectionCompleter = Completer<ScrcpyVideoConnection>();
+  var calls = 0;
+
+  @override
+  Future<ScrcpyVideoConnection> connect(
+    ScrcpySessionConfiguration configuration, {
+    AdbCancellationToken? cancellationToken,
+  }) {
+    calls++;
+    return connectionCompleter.future;
+  }
+}
+
+class RepeatingVideoConnector implements ScrcpyVideoConnector {
+  final connections = <FakeSessionVideoConnection>[];
+
+  @override
+  Future<ScrcpyVideoConnection> connect(
+    ScrcpySessionConfiguration configuration, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    final connection = FakeSessionVideoConnection();
+    connections.add(connection);
+    return connection;
+  }
+}
+
+class FakeSessionVideoConnection implements ScrcpyVideoConnection {
+  final doneCompleter = Completer<void>();
+  var closeCalls = 0;
+
+  @override
+  int get bytesReceived => 0;
+
+  @override
+  Future<ScrcpyVideoCodecInfo> get codec => Future.value(
+    const ScrcpyVideoCodecInfo(
+      codecId: ScrcpyVideoCodecInfo.h264,
+      width: 1080,
+      height: 1920,
+    ),
+  );
+
+  @override
+  Future<void> get done => doneCompleter.future;
+
+  @override
+  ScrcpyVideoConnectionInfo get info => const ScrcpyVideoConnectionInfo(
+    scid: 'session-test',
+    localPort: 12345,
+    remoteServerPath: '/data/local/tmp/test.jar',
+  );
+
+  @override
+  ScrcpyInputController? get input => null;
+
+  @override
+  Stream<ScrcpyVideoPacket> get packets => const Stream.empty();
+
+  @override
+  Stream<ScrcpyVideoCodecInfo> get sessions => const Stream.empty();
+
+  @override
+  Future<void> close() async {
+    closeCalls++;
+    if (!doneCompleter.isCompleted) doneCompleter.complete();
+  }
+
+  void disconnect() {
+    if (!doneCompleter.isCompleted) doneCompleter.complete();
+  }
 }
 
 void main() {
@@ -148,15 +269,151 @@ void main() {
     );
   });
 
-  test('ScrcpyClient forwards network connect and disconnect', () async {
+  test('ScrcpyClient forwards network connect, disconnect and pair', () async {
     final adb = FakeConnectionAdbClient();
     final client = ScrcpyClient(adbClient: adb);
     const endpoint = AdbEndpoint(host: '192.0.2.10', port: 5555);
 
     await client.connect(endpoint);
     await client.disconnect(endpoint);
+    await client.pair(endpoint, '123456');
 
     expect(adb.connected, same(endpoint));
     expect(adb.disconnected, same(endpoint));
+    expect(adb.paired, same(endpoint));
+    expect(adb.receivedPairingCode, '123456');
+  });
+
+  test('ScrcpyClient merges connected and paired mDNS devices', () async {
+    final devices = await ScrcpyClient(
+      adbClient: FakeUnifiedDiscoveryAdbClient(),
+    ).discoverDevices();
+
+    expect(devices, hasLength(2));
+    expect(devices.first.state, AdbDeviceState.device);
+    expect(devices.last.state, AdbDeviceState.paired);
+    expect(devices.last.serial, '192.0.2.20:42002');
+    expect(devices.last.isReady, isFalse);
+    expect(devices.last.lastSeenAt, isNotNull);
+    expect(
+      devices.where((device) => device.serial == '192.0.2.20:41001'),
+      isEmpty,
+    );
+  });
+
+  test(
+    'ScrcpySession coalesces concurrent start and stop operations',
+    () async {
+      final connector = FakeVideoConnector();
+      final connection = FakeSessionVideoConnection();
+      final session = ScrcpySession(
+        adbDeviceService: FakeAdbClient(),
+        configuration: const ScrcpySessionConfiguration(
+          deviceSerial: 'test-device',
+        ),
+        videoConnector: connector,
+      );
+
+      final firstStart = session.start();
+      final secondStart = session.start();
+      await Future<void>.delayed(Duration.zero);
+      expect(session.state.value, ScrcpySessionState.starting);
+      connector.connectionCompleter.complete(connection);
+
+      expect(await firstStart, same(connection));
+      expect(await secondStart, same(connection));
+      expect(connector.calls, 1);
+      expect(session.state.value, ScrcpySessionState.streaming);
+
+      await Future.wait(<Future<void>>[session.stop(), session.stop()]);
+      expect(connection.closeCalls, 1);
+      expect(session.state.value, ScrcpySessionState.ready);
+      session.dispose();
+    },
+  );
+
+  test('ScrcpySession reports an unexpected transport disconnect', () async {
+    final connector = FakeVideoConnector();
+    final connection = FakeSessionVideoConnection();
+    final session = ScrcpySession(
+      adbDeviceService: FakeAdbClient(),
+      configuration: const ScrcpySessionConfiguration(
+        deviceSerial: 'test-device',
+      ),
+      videoConnector: connector,
+    );
+
+    final starting = session.start();
+    await Future<void>.delayed(Duration.zero);
+    connector.connectionCompleter.complete(connection);
+    await starting;
+    connection.disconnect();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(session.state.value, ScrcpySessionState.disconnected);
+    expect(connection.closeCalls, 1);
+    session.dispose();
+  });
+
+  test(
+    'ScrcpySession closes a connection that arrives after dispose',
+    () async {
+      final connector = FakeVideoConnector();
+      final connection = FakeSessionVideoConnection();
+      final session = ScrcpySession(
+        adbDeviceService: FakeAdbClient(),
+        configuration: const ScrcpySessionConfiguration(
+          deviceSerial: 'test-device',
+        ),
+        videoConnector: connector,
+      );
+
+      final starting = session.start();
+      await Future<void>.delayed(Duration.zero);
+      expect(session.state.value, ScrcpySessionState.starting);
+      session.dispose();
+      connector.connectionCompleter.complete(connection);
+
+      await expectLater(
+        starting,
+        throwsA(
+          isA<ScrcpyException>().having(
+            (error) => error.code,
+            'code',
+            ScrcpyErrorCode.cancelled,
+          ),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(connection.closeCalls, 1);
+    },
+  );
+
+  test('ScrcpySession starts and stops cleanly for 50 cycles', () async {
+    final connector = RepeatingVideoConnector();
+    final session = ScrcpySession(
+      adbDeviceService: FakeAdbClient(),
+      configuration: const ScrcpySessionConfiguration(
+        deviceSerial: 'test-device',
+      ),
+      videoConnector: connector,
+    );
+
+    for (var iteration = 0; iteration < 50; iteration++) {
+      final connection = await session.start();
+      expect(session.state.value, ScrcpySessionState.streaming);
+      expect(connection, same(connector.connections.last));
+
+      await session.stop();
+      expect(session.state.value, ScrcpySessionState.ready);
+      expect(connector.connections.last.closeCalls, 1);
+    }
+
+    expect(connector.connections, hasLength(50));
+    expect(
+      connector.connections.every((connection) => connection.closeCalls == 1),
+      isTrue,
+    );
+    session.dispose();
   });
 }

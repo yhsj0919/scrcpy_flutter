@@ -145,61 +145,61 @@
 
 阶段完成判定：同一设备重复启停 50 次，不残留 ADB forward、server 进程、远端临时文件和 Flutter texture。
 
-- [ ] **P2-01 ADB 设备发现与状态解析**
+- [x] **P2-01 ADB 设备发现与状态解析**
   - 完成判定：统一发现 USB 和已连接网络设备，区分 authorized、unauthorized、offline 状态，解析设备信息并默认脱敏序列号。
   - 验证证据：覆盖常见 `adb devices -l` 输出的单元测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-01
+  - 提交/文件：`packages/adb_client/lib/src/adb_device.dart`、`packages/adb_client_process/lib/src/adb_devices_parser.dart`、`packages/adb_client_process/test/adb_devices_parser_test.dart`、`example/lib/main.dart`
+  - 备注：统一解析 USB 和网络设备，覆盖 device、unauthorized、offline、recovery、bootloader、sideload、no permissions 和 unknown；型号下划线已规范化，序列号默认使用稳定哈希脱敏。Demo 仅允许可用设备进入画面页，并为其他状态显示中文原因。
 
-- [ ] **P2-06 网络 ADB 连接管理**
+- [x] **P2-06 网络 ADB 连接管理**
   - 完成判定：支持输入 `IP:端口` 执行 connect/disconnect，具有超时、取消、重复连接处理和明确错误码。
-  - 验证证据：正确地址、错误地址、超时、重复连接和断开测试。
-  - 完成日期：
-  - 提交/文件：`packages/adb_client/lib/src/adb_endpoint.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`
-  - 备注：2026-09-01 已完成主机/IP、端口和 IPv6 地址解析，`ScrcpyClient` 公开 connect/disconnect，Demo 提供网络连接对话框及网络设备断开按钮，操作完成自动刷新列表。参数通过 `Process.start` 参数数组传递，不拼接 shell 字符串；尚需补齐超时、重复连接和真机错误场景后勾选。
+  - 验证证据：`docs/reports/p2-network-adb.md`。
+  - 完成日期：2026-09-01
+  - 提交/文件：`packages/adb_client/lib/src/adb_endpoint.dart`、`packages/adb_client_process/lib/src/process_adb_client.dart`、`packages/adb_client_process/test/process_adb_client_test.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`docs/reports/p2-network-adb.md`
+  - 备注：已完成地址解析、连接/断开、15 秒默认可配置超时、取消、错误码和诊断脱敏。Windows + ZC-3588A 网络真机验证通过重复连接、断开、重复断开、恢复连接、设备 ready 状态及错误端点拒绝。真实 ADB 对重复断开返回非零退出码和 `no such device`，适配层仅对此明确语义按幂等成功处理。
 
-- [ ] **P2-07 Wireless Debugging 配对码连接**
+- [x] **P2-07 Wireless Debugging 配对码连接**
   - 完成判定：支持输入/发现配对地址和配对码执行 `adb pair`，成功后连接调试地址；配对码不写日志、不持久化。
-  - 验证证据：成功、错误配对码、过期、端口变化和取消测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：配对端口与连接端口可能不同，UI 和数据模型必须分开。
+  - 验证证据：`docs/reports/p2-wireless-pairing.md`。
+  - 完成日期：2026-09-01
+  - 提交/文件：`packages/adb_client/lib/src/adb_mdns_service.dart`、`packages/adb_client_process/lib/src/adb_mdns_parser.dart`、`packages/adb_client_process/lib/src/process_adb_client.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`docs/reports/p2-wireless-pairing.md`
+  - 备注：已实现 `ScrcpyClient.pair`、mDNS pairing/connect 服务发现与 Demo 验证码配对表单；选择配对服务会自动匹配同主机变化后的最新连接端口。配对码输入隐藏，ADB 诊断参数已脱敏且不持久化。自动化覆盖成功、错误码、过期、取消、IPv4/IPv6 和端口变化；2026-09-01 用户确认手工真机验证通过。
 
-- [ ] **P2-08 统一连接设备列表**
+- [x] **P2-08 统一连接设备列表**
   - 完成判定：USB、网络、已配对/已连接设备使用统一模型，展示连接类型、状态、显示名和最后更新时间。
-  - 验证证据：混合连接类型的模型和 Widget 测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 验证证据：`docs/reports/p2-unified-device-list.md`。
+  - 完成日期：2026-09-01
+  - 提交/文件：`packages/adb_client/lib/src/adb_device.dart`、`packages/adb_client_process/lib/src/adb_devices_parser.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`test/scrcpy_flutter_test.dart`、`example/test/widget_test.dart`、`docs/reports/p2-unified-device-list.md`
+  - 备注：在线设备以 `adb devices -l` 为权威来源，mDNS connect 服务补充 `paired` 状态；pairing 广播不进入列表。同一服务端口变化取最新值，在线端点去重。所有条目记录最后发现时间；已配对设备提供连接按钮，在线网络设备提供断开按钮。
 
-- [ ] **P2-02 server 部署与版本校验**
+- [x] **P2-02 server 部署与版本校验**
   - 完成判定：部署固定 server，启动前验证版本匹配，失败时提供明确错误码。
   - 验证证据：匹配和不匹配版本测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-01
+  - 提交/文件：`lib/src/default_scrcpy_client_io.dart`、`lib/src/scrcpy_video_connection*.dart`、`test/scrcpy_server_resource_test.dart`、`windows/CMakeLists.txt`
+  - 备注：内置 server 固定为 4.1，启动会话前校验存在性和官方 SHA-256，不匹配分别返回 `resourceMissing`/`resourceInvalid`；成功校验在 connector 生命周期内缓存。宿主显式覆盖 server 路径时只检查存在性，不强制官方哈希。Windows Debug 构建产物与源码资源 SHA-256 均为 `DEACB991...8850CAE`。
 
-- [ ] **P2-03 会话状态机**
+- [x] **P2-03 会话状态机**
   - 完成判定：实现 idle/starting/streaming/stopping/error/disconnected，异步竞争不会导致重复资源释放或状态倒退。
   - 验证证据：并发 start/stop/dispose 单元测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-01
+  - 提交/文件：`lib/src/scrcpy_session.dart`、`lib/src/scrcpy_client.dart`、`lib/src/scrcpy_video_connection*.dart`、`test/scrcpy_flutter_test.dart`、`example/lib/main.dart`
+  - 备注：Session 已实际拥有视频连接，覆盖 idle/preparing/ready/starting/streaming/stopping/disconnected/error/disposed；并发 prepare/start/stop 合并为同一操作，意外 socket 结束进入 disconnected，启动期间 stop/dispose 不会被迟到结果改回 streaming。测试覆盖并发启停、意外断线、准备中 dispose 和连接建立前 dispose。
 
-- [ ] **P2-04 资源所有权与清理**
+- [x] **P2-04 资源所有权与清理**
   - 完成判定：每个 Session 独立拥有 SCID、端口、远端路径、进程、socket、Player 和 texture；正常停止及异常退出均可清理。
   - 验证证据：资源表和异常注入测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-01
+  - 提交/文件：`docs/lifecycle.md`、`lib/src/scrcpy_session.dart`、`lib/src/scrcpy_video_connection_io.dart`、`lib/src/native_scrcpy_video.dart`、`test/native_scrcpy_video_test.dart`、`test/scrcpy_flutter_test.dart`
+  - 备注：每个 Session 使用独立随机 SCID、动态端口和远端路径；Connection 拥有 forward、server 进程及视频/控制 socket，Controller 拥有原生解码器和 Texture。部分 socket 建立失败会关闭已建立 socket；任一 close/dispose 步骤失败仍继续清理后续资源。异常注入验证原生 Texture dispose 失败时 Connection 仍关闭，启动期间 dispose 也会回收迟到连接。资源表见 `docs/lifecycle.md`。
 
-- [ ] **P2-05 重复启停验收**
+- [x] **P2-05 重复启停验收**
   - 完成判定：同一设备连续启动/停止 50 次全部完成，结束后无项目创建的残留资源。
   - 验证证据：`docs/reports/p2-lifecycle.md`。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-01
+  - 提交/文件：`example/integration_test/native_video_test.dart`、`test/scrcpy_flutter_test.dart`、`docs/reports/p2-lifecycle.md`
+  - 备注：Windows + ZC-3588A（Android 15）真机最终连续 50 轮全部取得解码帧并正常停止；每轮验证原生 Texture ID 已释放。结束后 `localabstract:scrcpy_*` forward、scrcpy server 进程和远端临时 jar 计数均为 0。另保留一次间歇性失败记录，后续由 P1-05 长稳测试继续覆盖。
 
 ## P3：scrcpy 控制闭环（预计 6–9 天）
 

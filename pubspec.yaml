@@ -12,6 +12,7 @@ dependencies:
     path: packages/adb_client
   adb_client_process:
     path: packages/adb_client_process
+  crypto: ^3.0.7
   flutter:
     sdk: flutter
 

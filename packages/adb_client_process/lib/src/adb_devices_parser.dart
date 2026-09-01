@@ -1,6 +1,6 @@
 import 'package:adb_client/adb_client.dart';
 
-List<AdbDevice> parseAdbDevices(String output) {
+List<AdbDevice> parseAdbDevices(String output, {DateTime? observedAt}) {
   final devices = <AdbDevice>[];
   for (final rawLine in output.split(RegExp(r'\r?\n')).skip(1)) {
     final line = rawLine.trim();
@@ -31,6 +31,7 @@ List<AdbDevice> parseAdbDevices(String output) {
         model: attributes['model']?.replaceAll('_', ' '),
         device: attributes['device'],
         transportId: attributes['transport_id'],
+        lastSeenAt: observedAt,
         attributes: Map.unmodifiable(attributes),
       ),
     );

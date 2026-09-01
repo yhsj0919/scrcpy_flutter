@@ -35,7 +35,9 @@ for (final device in devices) {
 }
 ```
 
-ADB 领域能力位于独立的 `adb_client` package，通过主入口重导出。连接、配对、shell、sync、包管理和 forward 均有 typed interface，宿主不拼接 shell 字符串。
+ADB 领域能力位于独立的 `adb_client` package，通过主入口重导出。连接、配对、Wireless Debugging mDNS 发现、shell、sync、包管理和 forward 均有 typed interface，宿主不拼接 shell 字符串。
+
+`ScrcpyClient.discoverDevices()` 会合并 `adb devices -l` 与 mDNS connect 服务。在线设备优先；尚未在线的已配对设备使用 `AdbDeviceState.paired`，并通过 `lastSeenAt` 提供最后发现时间。pairing 广播只用于配对流程，不进入设备列表。
 
 ## 会话
 

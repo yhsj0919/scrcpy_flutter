@@ -2,6 +2,7 @@ import 'adb_cancellation_token.dart';
 import 'adb_command.dart';
 import 'adb_device.dart';
 import 'adb_endpoint.dart';
+import 'adb_mdns_service.dart';
 
 abstract interface class AdbCommandExecutor {
   Future<AdbCommandResult> execute(
@@ -47,6 +48,12 @@ abstract interface class AdbConnectionService {
   Future<void> pair(
     AdbEndpoint endpoint,
     String pairingCode, {
+    AdbCancellationToken? cancellationToken,
+  });
+}
+
+abstract interface class AdbMdnsDiscoveryService {
+  Future<List<AdbMdnsService>> discoverMdnsServices({
     AdbCancellationToken? cancellationToken,
   });
 }
@@ -111,6 +118,7 @@ abstract interface class AdbClient
         AdbLongRunningCommandExecutor,
         AdbDeviceService,
         AdbConnectionService,
+        AdbMdnsDiscoveryService,
         AdbShellService,
         AdbSyncService,
         AdbPackageService,

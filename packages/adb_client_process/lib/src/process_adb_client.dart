@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:adb_client/adb_client.dart';
 
 import 'adb_devices_parser.dart';
+import 'adb_mdns_parser.dart';
 
 typedef AdbDiagnosticSink = void Function(
   String event,
@@ -18,12 +19,14 @@ final class ProcessAdbClient implements AdbClient {
     this.executableArguments = const <String>[],
     this.environment,
     this.onDiagnostic,
+    this.connectionTimeout = const Duration(seconds: 15),
   }) : executable = executable ?? resolveBundledAdbExecutable();
 
   final String executable;
   final List<String> executableArguments;
   final Map<String, String>? environment;
   final AdbDiagnosticSink? onDiagnostic;
+  final Duration connectionTimeout;
 
   @override
   Future<AdbRunningCommand> start(
@@ -162,7 +165,10 @@ final class ProcessAdbClient implements AdbClient {
       );
     }
     try {
-      return parseAdbDevices(utf8.decode(result.stdout));
+      return parseAdbDevices(
+        utf8.decode(result.stdout),
+        observedAt: DateTime.now(),
+      );
     } on FormatException {
       throw const AdbException(
         AdbErrorCode.invalidResponse,
@@ -172,14 +178,38 @@ final class ProcessAdbClient implements AdbClient {
   }
 
   @override
+  Future<List<AdbMdnsService>> discoverMdnsServices({
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    const command = AdbCommand(<String>['mdns', 'services']);
+    final result = await execute(command, cancellationToken: cancellationToken);
+    if (!result.isSuccess) {
+      throw AdbException(
+        AdbErrorCode.commandFailed,
+        'Unable to discover Wireless Debugging services',
+        exitCode: result.exitCode,
+      );
+    }
+    return parseAdbMdnsServices(
+      utf8.decode(result.stdout, allowMalformed: true),
+    );
+  }
+
+  @override
   Future<void> connect(
     AdbEndpoint endpoint, {
     AdbCancellationToken? cancellationToken,
-  }) => _executeChecked(
-    AdbCommand(
+  }) => _executeAdbOperation(
+    command: AdbCommand(
       <String>['connect', endpoint.authority],
+      timeout: connectionTimeout,
       sensitiveArgumentIndexes: const <int>{1},
     ),
+    isSuccessful: (output) =>
+        output.contains('connected to ') ||
+        output.contains('already connected to '),
+    errorCode: AdbErrorCode.connectionFailed,
+    errorMessage: 'Unable to connect to the ADB device',
     cancellationToken: cancellationToken,
   );
 
@@ -187,11 +217,17 @@ final class ProcessAdbClient implements AdbClient {
   Future<void> disconnect(
     AdbEndpoint endpoint, {
     AdbCancellationToken? cancellationToken,
-  }) => _executeChecked(
-    AdbCommand(
+  }) => _executeAdbOperation(
+    command: AdbCommand(
       <String>['disconnect', endpoint.authority],
+      timeout: connectionTimeout,
       sensitiveArgumentIndexes: const <int>{1},
     ),
+    isSuccessful: (output) =>
+        output.contains('disconnected ') || output.contains('no such device'),
+    errorCode: AdbErrorCode.connectionFailed,
+    errorMessage: 'Unable to disconnect the ADB device',
+    allowSemanticSuccessOnNonZero: true,
     cancellationToken: cancellationToken,
   );
 
@@ -200,11 +236,15 @@ final class ProcessAdbClient implements AdbClient {
     AdbEndpoint endpoint,
     String pairingCode, {
     AdbCancellationToken? cancellationToken,
-  }) => _executeChecked(
-    AdbCommand(
+  }) => _executeAdbOperation(
+    command: AdbCommand(
       <String>['pair', endpoint.authority, pairingCode],
+      timeout: connectionTimeout,
       sensitiveArgumentIndexes: const <int>{1, 2},
     ),
+    isSuccessful: (output) => output.contains('successfully paired to '),
+    errorCode: AdbErrorCode.pairingFailed,
+    errorMessage: 'Unable to pair with the ADB device',
     cancellationToken: cancellationToken,
   );
 
@@ -315,6 +355,26 @@ final class ProcessAdbClient implements AdbClient {
         'ADB command failed',
         exitCode: result.exitCode,
       );
+    }
+  }
+
+  Future<void> _executeAdbOperation({
+    required AdbCommand command,
+    required bool Function(String output) isSuccessful,
+    required AdbErrorCode errorCode,
+    required String errorMessage,
+    bool allowSemanticSuccessOnNonZero = false,
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    final result = await execute(command, cancellationToken: cancellationToken);
+    final output =
+        '${utf8.decode(result.stdout, allowMalformed: true)}\n'
+                '${utf8.decode(result.stderr, allowMalformed: true)}'
+            .toLowerCase();
+    final semanticSuccess = isSuccessful(output);
+    if (!semanticSuccess ||
+        (!result.isSuccess && !allowSemanticSuccessOnNonZero)) {
+      throw AdbException(errorCode, errorMessage, exitCode: result.exitCode);
     }
   }
 }

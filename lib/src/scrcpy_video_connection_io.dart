@@ -5,6 +5,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:adb_client/adb_client.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'scrcpy_error.dart';
@@ -17,26 +18,52 @@ import 'scrcpy_video_packet.dart';
 ScrcpyVideoConnector createScrcpyVideoConnector({
   required AdbClient adbClient,
   required String serverPath,
-}) => _IoScrcpyVideoConnector(adbClient, serverPath);
+  String? expectedServerSha256,
+}) => _IoScrcpyVideoConnector(adbClient, serverPath, expectedServerSha256);
+
+Future<void> validateScrcpyServerResource(
+  String serverPath, {
+  String? expectedSha256,
+}) async {
+  final file = File(serverPath);
+  if (!await file.exists()) {
+    throw const ScrcpyException(
+      ScrcpyErrorCode.resourceMissing,
+      'Bundled scrcpy server was not found',
+    );
+  }
+  if (expectedSha256 == null) return;
+  final digest = await sha256.bind(file.openRead()).first;
+  if (digest.toString().toLowerCase() != expectedSha256.toLowerCase()) {
+    throw const ScrcpyException(
+      ScrcpyErrorCode.resourceInvalid,
+      'Bundled scrcpy server checksum does not match version 4.1',
+    );
+  }
+}
 
 final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
-  _IoScrcpyVideoConnector(this._adb, this._serverPath);
+  _IoScrcpyVideoConnector(
+    this._adb,
+    this._serverPath,
+    this._expectedServerSha256,
+  );
 
   static const _version = '4.1';
   final AdbClient _adb;
   final String _serverPath;
+  final String? _expectedServerSha256;
+  Future<void>? _resourceValidation;
 
   @override
   Future<ScrcpyVideoConnection> connect(
     ScrcpySessionConfiguration configuration, {
     AdbCancellationToken? cancellationToken,
   }) async {
-    if (!await File(_serverPath).exists()) {
-      throw const ScrcpyException(
-        ScrcpyErrorCode.resourceMissing,
-        'Bundled scrcpy server was not found',
-      );
-    }
+    await (_resourceValidation ??= validateScrcpyServerResource(
+      _serverPath,
+      expectedSha256: _expectedServerSha256,
+    ));
     final scid = Random.secure()
         .nextInt(0x7fffffff)
         .toRadixString(16)
@@ -173,15 +200,16 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
           'scrcpy connection cancelled',
         );
       }
+      _ReadySocket? video;
+      _ReadySocket? control;
       try {
-        final video = _ReadySocket(
+        video = _ReadySocket(
           await Socket.connect(
             InternetAddress.loopbackIPv4,
             port,
             timeout: const Duration(milliseconds: 500),
           ),
         );
-        _ReadySocket? control;
         if (controlEnabled) {
           control = _ReadySocket(
             await Socket.connect(
@@ -196,10 +224,13 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
           onTimeout: () => false,
         );
         if (ready) return _SocketPair(video, control);
-        await video.close();
-        await control?.close();
-      } on SocketException catch (error) {
+        lastError = StateError('scrcpy socket closed before becoming ready');
+        await _ignoreFailure(video.close());
+        if (control != null) await _ignoreFailure(control.close());
+      } catch (error) {
         lastError = error;
+        if (video != null) await _ignoreFailure(video.close());
+        if (control != null) await _ignoreFailure(control.close());
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
@@ -291,6 +322,7 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
       onError: (Object error, StackTrace stackTrace) {
         if (!_codec.isCompleted) _codec.completeError(error, stackTrace);
         _packetController.addError(error, stackTrace);
+        if (!_done.isCompleted) _done.completeError(error, stackTrace);
       },
       onDone: () async {
         if (_bytesReceived == 0) {
@@ -321,6 +353,7 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
         }
         unawaited(_packetController.close());
         unawaited(_sessionController.close());
+        if (!_done.isCompleted) _done.complete();
       },
     );
   }
@@ -333,6 +366,7 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
   final BytesBuilder _serverOutput;
   final Completer<ScrcpyVideoCodecInfo> _codec =
       Completer<ScrcpyVideoCodecInfo>();
+  final Completer<void> _done = Completer<void>();
   final StreamController<ScrcpyVideoPacket> _packetController =
       StreamController<ScrcpyVideoPacket>();
   final StreamController<ScrcpyVideoCodecInfo> _sessionController =
@@ -361,15 +395,20 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
   int get bytesReceived => _bytesReceived;
 
   @override
+  Future<void> get done => _done.future;
+
+  @override
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
-    await _socket.close().timeout(const Duration(seconds: 2));
-    await _input?.close();
+    await _ignoreFailure(_socket.close().timeout(const Duration(seconds: 2)));
+    if (_input != null) await _ignoreFailure(_input.close());
     _serverProcess.kill();
-    await _serverProcess.exitCode.timeout(
-      const Duration(seconds: 2),
-      onTimeout: () => -1,
+    await _ignoreFailure(
+      _serverProcess.exitCode.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => -1,
+      ),
     );
     await _ignoreFailure(
       _adb
@@ -381,6 +420,7 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
           .shell(_serial, <String>['rm', '-f', info.remoteServerPath])
           .timeout(const Duration(seconds: 2)),
     );
+    if (!_done.isCompleted) _done.complete();
   }
 }
 
@@ -441,8 +481,11 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
       _send(ScrcpyControlMessageSerializer.text(text));
 
   Future<void> close() async {
-    await _writes;
-    await _socket.close();
+    try {
+      await _writes;
+    } finally {
+      await _socket.close();
+    }
   }
 }
 

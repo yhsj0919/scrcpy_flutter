@@ -28,6 +28,7 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
   int _lastFrameCount = 0;
   DateTime? _lastStatsAt;
   Future<void> _sessionChange = Future<void>.value();
+  Future<void>? _stopping;
 
   @override
   ScrcpyVideoState get value => _value;
@@ -243,14 +244,35 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
   }
 
   @override
-  Future<void> stop() async {
+  Future<void> stop() => _stopping ??= _stop().whenComplete(() {
+    _stopping = null;
+  });
+
+  Future<void> _stop() async {
+    Object? cleanupError;
+    StackTrace? cleanupStackTrace;
+    Future<void> attempt(Future<void> Function() operation) async {
+      try {
+        await operation();
+      } catch (error, stackTrace) {
+        cleanupError ??= error;
+        cleanupStackTrace ??= stackTrace;
+      }
+    }
+
     _statsTimer?.cancel();
     _statsTimer = null;
-    await _sessionSubscription?.cancel();
+    final sessionSubscription = _sessionSubscription;
     _sessionSubscription = null;
-    await _sessionChange;
-    await _subscription?.cancel();
+    if (sessionSubscription != null) {
+      await attempt(sessionSubscription.cancel);
+    }
+    await attempt(() => _sessionChange);
+    final packetSubscription = _subscription;
     _subscription = null;
+    if (packetSubscription != null) {
+      await attempt(packetSubscription.cancel);
+    }
     _pendingConfig = null;
     _packetCount = 0;
     _lastFrameCount = 0;
@@ -258,19 +280,28 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
     final textureId = _textureId;
     _textureId = null;
     if (textureId != null) {
-      await _channel.invokeMethod<void>('dispose', <String, Object>{
-        'textureId': textureId,
-      });
+      await attempt(
+        () => _channel.invokeMethod<void>('dispose', <String, Object>{
+          'textureId': textureId,
+        }),
+      );
     }
-    await _connection.close();
-    _setValue(const ScrcpyVideoState.idle());
+    await attempt(_connection.close);
+    if (cleanupError == null) {
+      _setValue(const ScrcpyVideoState.idle());
+    } else {
+      _setValue(
+        ScrcpyVideoState(status: ScrcpyVideoStatus.error, error: cleanupError),
+      );
+      Error.throwWithStackTrace(cleanupError!, cleanupStackTrace!);
+    }
   }
 
   @override
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    unawaited(stop());
+    unawaited(stop().catchError((Object _) {}));
     super.dispose();
   }
 }

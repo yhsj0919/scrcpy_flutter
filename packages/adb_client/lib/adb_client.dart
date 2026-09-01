@@ -6,3 +6,4 @@ export 'src/adb_command.dart';
 export 'src/adb_device.dart';
 export 'src/adb_endpoint.dart';
 export 'src/adb_exception.dart';
+export 'src/adb_mdns_service.dart';

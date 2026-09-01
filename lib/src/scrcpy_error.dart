@@ -1,6 +1,7 @@
 enum ScrcpyErrorCode {
   unsupportedCapability,
   resourceMissing,
+  resourceInvalid,
   adbFailure,
   connectionFailure,
   protocolFailure,

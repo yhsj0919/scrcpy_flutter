@@ -33,6 +33,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
   Object? _error;
   bool _loading = false;
   bool _changingConnection = false;
+  DateTime? _lastUpdated;
 
   @override
   void initState() {
@@ -49,7 +50,10 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
     try {
       final devices = await widget.client.discoverDevices();
       if (!mounted) return;
-      setState(() => _devices = devices);
+      setState(() {
+        _devices = devices;
+        _lastUpdated = DateTime.now();
+      });
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error);
@@ -101,9 +105,70 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
     }
   }
 
+  Future<void> _connectPairedDevice(AdbDevice device) async {
+    if (_changingConnection) return;
+    final endpoint = AdbEndpoint.tryParse(device.serial);
+    if (endpoint == null) {
+      setState(() => _error = '无法解析已配对设备地址：${device.redactedSerial}');
+      return;
+    }
+    setState(() {
+      _changingConnection = true;
+      _error = null;
+    });
+    try {
+      await widget.client.connect(endpoint);
+      await _refreshAfterConnectionChange();
+      if (mounted) _showMessage('已连接配对设备 ${endpoint.authority}');
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _changingConnection = false);
+    }
+  }
+
+  Future<void> _pair() async {
+    List<AdbMdnsService> discoveredServices = const <AdbMdnsService>[];
+    try {
+      discoveredServices = await widget.client.discoverMdnsServices();
+    } catch (_) {
+      // Manual entry remains available when mDNS is unavailable.
+    }
+    if (!mounted) return;
+    final request = await showDialog<_PairDeviceRequest>(
+      context: context,
+      builder: (context) =>
+          _PairDeviceDialog(discoveredServices: discoveredServices),
+    );
+    if (request == null || _changingConnection) return;
+    setState(() {
+      _changingConnection = true;
+      _error = null;
+    });
+    try {
+      await widget.client.pair(request.pairingEndpoint, request.pairingCode);
+      if (request.connectionEndpoint case final endpoint?) {
+        await widget.client.connect(endpoint);
+      }
+      await _refreshAfterConnectionChange();
+      if (mounted) {
+        _showMessage(request.connectionEndpoint == null ? '配对成功' : '配对并连接成功');
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _changingConnection = false);
+    }
+  }
+
   Future<void> _refreshAfterConnectionChange() async {
     final devices = await widget.client.discoverDevices();
-    if (mounted) setState(() => _devices = devices);
+    if (mounted) {
+      setState(() {
+        _devices = devices;
+        _lastUpdated = DateTime.now();
+      });
+    }
   }
 
   void _showMessage(String message) {
@@ -123,6 +188,11 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
             onPressed: _changingConnection ? null : _connect,
             icon: const Icon(Icons.add_link),
             label: const Text('网络连接'),
+          ),
+          TextButton.icon(
+            onPressed: _changingConnection ? null : _pair,
+            icon: const Icon(Icons.password),
+            label: const Text('验证码配对'),
           ),
           IconButton(
             tooltip: '刷新设备',
@@ -155,18 +225,37 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
               leading: const Icon(Icons.video_library),
               title: const Text('scrcpy server 4.1 · Native Texture'),
               subtitle: Text(
-                runtime?.scrcpyServerPath ?? '当前平台未提供 scrcpy server',
+                runtime?.scrcpyServerPath == null
+                    ? '当前平台未提供 scrcpy server'
+                    : '${runtime!.scrcpyServerPath}\n'
+                          '版本 ${runtime.scrcpyServerVersion ?? '自定义'} · '
+                          '${runtime.scrcpyServerSha256 == null ? '自定义资源' : '启动时校验 SHA-256'}',
               ),
+              isThreeLine: runtime?.scrcpyServerPath != null,
             ),
           ),
           const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.devices),
+              title: Text(
+                '设备 ${_devices.length} 台 · '
+                '可用 ${_devices.where((device) => device.isReady).length} 台',
+              ),
+              subtitle: Text(
+                _lastUpdated == null
+                    ? '尚未刷新'
+                    : '最后刷新 ${_formatTime(_lastUpdated!)}',
+              ),
+            ),
+          ),
           if (_loading || _changingConnection) const LinearProgressIndicator(),
           if (_error case final error?)
             Card(
               color: Theme.of(context).colorScheme.errorContainer,
               child: ListTile(
                 leading: const Icon(Icons.error_outline),
-                title: const Text('设备发现失败'),
+                title: const Text('操作失败'),
                 subtitle: Text('$error'),
               ),
             )
@@ -184,7 +273,12 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
                 client: widget.client,
                 device: device,
                 connectionBusy: _changingConnection,
-                onDisconnect: device.connectionType == AdbConnectionType.network
+                onConnect: device.state == AdbDeviceState.paired
+                    ? () => _connectPairedDevice(device)
+                    : null,
+                onDisconnect:
+                    device.connectionType == AdbConnectionType.network &&
+                        device.state != AdbDeviceState.paired
                     ? () => _disconnect(device)
                     : null,
               ),
@@ -193,6 +287,11 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       ),
     );
   }
+
+  String _formatTime(DateTime value) =>
+      '${value.hour.toString().padLeft(2, '0')}:'
+      '${value.minute.toString().padLeft(2, '0')}:'
+      '${value.second.toString().padLeft(2, '0')}';
 }
 
 class _DeviceTile extends StatelessWidget {
@@ -200,12 +299,14 @@ class _DeviceTile extends StatelessWidget {
     required this.client,
     required this.device,
     required this.connectionBusy,
+    this.onConnect,
     this.onDisconnect,
   });
 
   final ScrcpyClient client;
   final AdbDevice device;
   final bool connectionBusy;
+  final VoidCallback? onConnect;
   final VoidCallback? onDisconnect;
 
   @override
@@ -218,25 +319,97 @@ class _DeviceTile extends StatelessWidget {
       ),
       title: Text(device.model ?? device.device ?? 'Android 设备'),
       subtitle: Text(
-        '${device.redactedSerial} · ${device.connectionType.name} · '
-        '${device.state.name}',
+        '${device.redactedSerial} · ${_connectionLabel(device.connectionType)} · '
+        '${_stateLabel(device.state)}'
+        '${device.lastSeenAt == null ? '' : ' · ${_formatDeviceTime(device.lastSeenAt!)}'}',
       ),
-      trailing: onDisconnect == null
-          ? device.state == AdbDeviceState.device
-                ? const Icon(Icons.check_circle, color: Colors.green)
-                : const Icon(Icons.warning_amber)
-          : IconButton(
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Tooltip(
+            message: _stateHint(device.state),
+            child: Icon(
+              _stateIcon(device.state),
+              color: _stateColor(device.state),
+            ),
+          ),
+          if (onConnect != null)
+            IconButton(
+              tooltip: '连接已配对设备',
+              onPressed: connectionBusy ? null : onConnect,
+              icon: const Icon(Icons.link),
+            ),
+          if (onDisconnect != null)
+            IconButton(
               tooltip: '断开网络设备',
               onPressed: connectionBusy ? null : onDisconnect,
               icon: const Icon(Icons.link_off),
             ),
-      onTap: () => Navigator.of(context).push<void>(
-        MaterialPageRoute<void>(
-          builder: (_) => DeviceSessionPage(client: client, device: device),
-        ),
+        ],
       ),
+      onTap: device.isReady
+          ? () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) =>
+                    DeviceSessionPage(client: client, device: device),
+              ),
+            )
+          : null,
     ),
   );
+
+  static String _connectionLabel(AdbConnectionType type) => switch (type) {
+    AdbConnectionType.usb => 'USB',
+    AdbConnectionType.network => '网络',
+    AdbConnectionType.unknown => '未知连接',
+  };
+
+  static String _stateLabel(AdbDeviceState state) => switch (state) {
+    AdbDeviceState.device => '可用',
+    AdbDeviceState.unauthorized => '等待授权',
+    AdbDeviceState.offline => '离线',
+    AdbDeviceState.recovery => 'Recovery 模式',
+    AdbDeviceState.bootloader => 'Bootloader 模式',
+    AdbDeviceState.sideload => 'Sideload 模式',
+    AdbDeviceState.noPermissions => '无访问权限',
+    AdbDeviceState.paired => '已配对，未连接',
+    AdbDeviceState.unknown => '未知状态',
+  };
+
+  static String _stateHint(AdbDeviceState state) => switch (state) {
+    AdbDeviceState.device => '设备可用，点击进入画面',
+    AdbDeviceState.unauthorized => '请在 Android 设备上确认 USB 调试授权',
+    AdbDeviceState.offline => '设备离线，请检查连接后刷新',
+    AdbDeviceState.noPermissions => '当前进程没有访问该设备的权限',
+    AdbDeviceState.paired => '设备已配对，连接后可启动 scrcpy 会话',
+    _ => '该状态暂不支持启动 scrcpy 会话',
+  };
+
+  static IconData _stateIcon(AdbDeviceState state) => switch (state) {
+    AdbDeviceState.device => Icons.check_circle,
+    AdbDeviceState.unauthorized => Icons.key_off,
+    AdbDeviceState.offline => Icons.cloud_off,
+    AdbDeviceState.recovery => Icons.restore,
+    AdbDeviceState.bootloader => Icons.build_circle,
+    AdbDeviceState.sideload => Icons.system_update,
+    AdbDeviceState.noPermissions => Icons.lock,
+    AdbDeviceState.paired => Icons.link,
+    AdbDeviceState.unknown => Icons.help,
+  };
+
+  static Color _stateColor(AdbDeviceState state) => switch (state) {
+    AdbDeviceState.device => Colors.green,
+    AdbDeviceState.unauthorized => Colors.orange,
+    AdbDeviceState.offline => Colors.grey,
+    AdbDeviceState.noPermissions => Colors.red,
+    AdbDeviceState.paired => Colors.indigo,
+    _ => Colors.blueGrey,
+  };
+
+  static String _formatDeviceTime(DateTime value) =>
+      '${value.hour.toString().padLeft(2, '0')}:'
+      '${value.minute.toString().padLeft(2, '0')}:'
+      '${value.second.toString().padLeft(2, '0')}';
 }
 
 class _ConnectDeviceDialog extends StatefulWidget {
@@ -290,6 +463,168 @@ class _ConnectDeviceDialogState extends State<_ConnectDeviceDialog> {
   }
 }
 
+final class _PairDeviceRequest {
+  const _PairDeviceRequest({
+    required this.pairingEndpoint,
+    required this.pairingCode,
+    this.connectionEndpoint,
+  });
+
+  final AdbEndpoint pairingEndpoint;
+  final String pairingCode;
+  final AdbEndpoint? connectionEndpoint;
+}
+
+class _PairDeviceDialog extends StatefulWidget {
+  const _PairDeviceDialog({required this.discoveredServices});
+
+  final List<AdbMdnsService> discoveredServices;
+
+  @override
+  State<_PairDeviceDialog> createState() => _PairDeviceDialogState();
+}
+
+class _PairDeviceDialogState extends State<_PairDeviceDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _pairingAddressController = TextEditingController();
+  final _pairingCodeController = TextEditingController();
+  final _connectionAddressController = TextEditingController();
+
+  @override
+  void dispose() {
+    _pairingAddressController.dispose();
+    _pairingCodeController.dispose();
+    _connectionAddressController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Wireless Debugging 配对'),
+    content: SizedBox(
+      width: 440,
+      child: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            if (widget.discoveredServices.isNotEmpty) ...<Widget>[
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '发现的无线调试服务',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: <Widget>[
+                  for (final service in widget.discoveredServices)
+                    ActionChip(
+                      avatar: Icon(
+                        service.type == AdbMdnsServiceType.pairing
+                            ? Icons.password
+                            : Icons.link,
+                        size: 18,
+                      ),
+                      label: Text(
+                        '${service.type == AdbMdnsServiceType.pairing ? '配对' : '连接'} '
+                        '${service.endpoint.authority}',
+                      ),
+                      onPressed: () {
+                        if (service.type == AdbMdnsServiceType.pairing) {
+                          _pairingAddressController.text =
+                              service.endpoint.authority;
+                          final matchingConnection = widget.discoveredServices
+                              .where(
+                                (candidate) =>
+                                    candidate.type ==
+                                        AdbMdnsServiceType.connect &&
+                                    candidate.endpoint.host ==
+                                        service.endpoint.host,
+                              )
+                              .lastOrNull;
+                          if (matchingConnection != null) {
+                            _connectionAddressController.text =
+                                matchingConnection.endpoint.authority;
+                          }
+                        } else {
+                          _connectionAddressController.text =
+                              service.endpoint.authority;
+                        }
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ],
+            TextFormField(
+              controller: _pairingAddressController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: '配对地址',
+                hintText: '192.168.1.100:37123',
+              ),
+              validator: (value) => AdbEndpoint.tryParse(value ?? '') == null
+                  ? '请输入手机显示的配对 IP 和端口'
+                  : null,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _pairingCodeController,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: '六位配对码'),
+              validator: (value) => RegExp(r'^\d{6}$').hasMatch(value ?? '')
+                  ? null
+                  : '请输入六位数字配对码',
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _connectionAddressController,
+              decoration: const InputDecoration(
+                labelText: '连接地址（可选）',
+                hintText: '192.168.1.100:调试端口',
+                helperText: '配对端口和连接端口通常不同',
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) return null;
+                return AdbEndpoint.tryParse(value) == null
+                    ? '请输入有效的连接 IP 和端口'
+                    : null;
+              },
+              onFieldSubmitted: (_) => _submit(),
+            ),
+          ],
+        ),
+      ),
+    ),
+    actions: <Widget>[
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _submit, child: const Text('配对')),
+    ],
+  );
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
+    final connectionAddress = _connectionAddressController.text.trim();
+    Navigator.of(context).pop(
+      _PairDeviceRequest(
+        pairingEndpoint: AdbEndpoint.tryParse(_pairingAddressController.text)!,
+        pairingCode: _pairingCodeController.text,
+        connectionEndpoint: connectionAddress.isEmpty
+            ? null
+            : AdbEndpoint.tryParse(connectionAddress),
+      ),
+    );
+  }
+}
+
 class DeviceSessionPage extends StatefulWidget {
   const DeviceSessionPage({
     required this.client,
@@ -305,9 +640,7 @@ class DeviceSessionPage extends StatefulWidget {
 }
 
 class _DeviceSessionPageState extends State<DeviceSessionPage> {
-  late final ScrcpySession _session = widget.client.createSession(
-    ScrcpySessionConfiguration(deviceSerial: widget.device.serial),
-  );
+  late ScrcpySession _session;
   Object? _error;
   ScrcpyVideoController? _videoController;
   ScrcpyInputController? _inputController;
@@ -319,7 +652,28 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   @override
   void initState() {
     super.initState();
+    _session = _createSession();
     _prepare();
+  }
+
+  ScrcpySession _createSession() => widget.client.createSession(
+    ScrcpySessionConfiguration(
+      deviceSerial: widget.device.serial,
+      controlEnabled: true,
+      video: ScrcpyVideoOptions(
+        maxSize: _maxSize,
+        maxFps: _maxFps,
+        bitRate: _bitRateMbps * 1000 * 1000,
+      ),
+    ),
+  );
+
+  void _replaceSession(void Function() updateOptions) {
+    _session.dispose();
+    setState(() {
+      updateOptions();
+      _session = _createSession();
+    });
   }
 
   Future<void> _prepare() async {
@@ -338,18 +692,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
       _error = null;
     });
     try {
-      await _session.prepare();
-      final connection = await widget.client.createVideoConnector().connect(
-        ScrcpySessionConfiguration(
-          deviceSerial: widget.device.serial,
-          controlEnabled: true,
-          video: ScrcpyVideoOptions(
-            maxSize: _maxSize,
-            maxFps: _maxFps,
-            bitRate: _bitRateMbps * 1000 * 1000,
-          ),
-        ),
-      );
+      final connection = await _session.start();
       final controller = createNativeScrcpyVideoController(connection);
       if (!mounted) {
         controller.dispose();
@@ -370,6 +713,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   Future<void> _stopVideo() async {
     final controller = _videoController;
     if (controller == null) return;
+    await _session.stop();
     await controller.stop();
     controller.dispose();
     if (mounted) {
@@ -443,7 +787,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
                       )
                       .toList(),
                   onChanged: _videoController == null
-                      ? (value) => setState(() => _maxSize = value!)
+                      ? (value) => _replaceSession(() => _maxSize = value!)
                       : null,
                 ),
               ),
@@ -461,7 +805,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
                       )
                       .toList(),
                   onChanged: _videoController == null
-                      ? (value) => setState(() => _maxFps = value!)
+                      ? (value) => _replaceSession(() => _maxFps = value!)
                       : null,
                 ),
               ),
@@ -479,7 +823,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
                       )
                       .toList(),
                   onChanged: _videoController == null
-                      ? (value) => setState(() => _bitRateMbps = value!)
+                      ? (value) => _replaceSession(() => _bitRateMbps = value!)
                       : null,
                 ),
               ),

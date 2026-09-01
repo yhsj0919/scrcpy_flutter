@@ -2,6 +2,8 @@ enum AdbErrorCode {
   executableNotFound,
   startFailed,
   commandFailed,
+  connectionFailed,
+  pairingFailed,
   timedOut,
   cancelled,
   invalidResponse,

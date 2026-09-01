@@ -28,7 +28,50 @@ final class ScrcpyClient {
 
   Future<List<AdbDevice>> discoverDevices({
     AdbCancellationToken? cancellationToken,
-  }) => adbClient.listDevices(cancellationToken: cancellationToken);
+  }) async {
+    final connected = await adbClient.listDevices(
+      cancellationToken: cancellationToken,
+    );
+    final service = adbClient;
+    if (service is! AdbMdnsDiscoveryService) return connected;
+
+    List<AdbMdnsService> mdnsServices;
+    try {
+      mdnsServices = await (service as AdbMdnsDiscoveryService)
+          .discoverMdnsServices(cancellationToken: cancellationToken);
+    } on AdbException catch (error) {
+      if (error.code == AdbErrorCode.cancelled) rethrow;
+      return connected;
+    }
+
+    final entries = <AdbDevice>[...connected];
+    final onlineAuthorities = connected
+        .where((device) => device.connectionType == AdbConnectionType.network)
+        .map((device) => device.serial.toLowerCase())
+        .toSet();
+    final latestConnectServiceByName = <String, AdbMdnsService>{};
+    for (final discovered in mdnsServices) {
+      if (discovered.type == AdbMdnsServiceType.connect) {
+        latestConnectServiceByName[discovered.name] = discovered;
+      }
+    }
+    final observedAt = DateTime.now();
+    for (final discovered in latestConnectServiceByName.values) {
+      final authority = discovered.endpoint.authority;
+      if (!onlineAuthorities.add(authority.toLowerCase())) continue;
+      entries.add(
+        AdbDevice(
+          serial: authority,
+          state: AdbDeviceState.paired,
+          connectionType: AdbConnectionType.network,
+          model: 'Wireless Debugging 设备',
+          lastSeenAt: observedAt,
+          attributes: <String, String>{'mdns_service_name': discovered.name},
+        ),
+      );
+    }
+    return List<AdbDevice>.unmodifiable(entries);
+  }
 
   Future<void> connect(
     AdbEndpoint endpoint, {
@@ -64,20 +107,65 @@ final class ScrcpyClient {
     );
   }
 
+  Future<void> pair(
+    AdbEndpoint endpoint,
+    String pairingCode, {
+    AdbCancellationToken? cancellationToken,
+  }) {
+    final service = adbClient;
+    if (service is! AdbConnectionService) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.unsupportedCapability,
+        'ADB pairing is unavailable for this client',
+      );
+    }
+    return (service as AdbConnectionService).pair(
+      endpoint,
+      pairingCode,
+      cancellationToken: cancellationToken,
+    );
+  }
+
+  Future<List<AdbMdnsService>> discoverMdnsServices({
+    AdbCancellationToken? cancellationToken,
+  }) {
+    final service = adbClient;
+    if (service is! AdbMdnsDiscoveryService) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.unsupportedCapability,
+        'Wireless Debugging discovery is unavailable for this client',
+      );
+    }
+    return (service as AdbMdnsDiscoveryService).discoverMdnsServices(
+      cancellationToken: cancellationToken,
+    );
+  }
+
   ScrcpySession createSession(ScrcpySessionConfiguration configuration) =>
-      ScrcpySession(adbDeviceService: adbClient, configuration: configuration);
+      ScrcpySession(
+        adbDeviceService: adbClient,
+        configuration: configuration,
+        videoConnector: _videoConnectorOrNull(),
+      );
 
   ScrcpyVideoConnector createVideoConnector() {
-    final path = runtimeInfo?.scrcpyServerPath;
-    if (adbClient is! AdbClient || path == null || path.isEmpty) {
+    final connector = _videoConnectorOrNull();
+    if (connector == null) {
       throw const ScrcpyException(
         ScrcpyErrorCode.unsupportedCapability,
         'Video connection is unavailable for this client',
       );
     }
+    return connector;
+  }
+
+  ScrcpyVideoConnector? _videoConnectorOrNull() {
+    final path = runtimeInfo?.scrcpyServerPath;
+    if (adbClient is! AdbClient || path == null || path.isEmpty) return null;
     return createScrcpyVideoConnector(
       adbClient: adbClient as AdbClient,
       serverPath: path,
+      expectedServerSha256: runtimeInfo?.scrcpyServerSha256,
     );
   }
 }
@@ -87,9 +175,13 @@ final class ScrcpyRuntimeInfo {
     required this.usesBundledAdb,
     this.adbExecutablePath,
     this.scrcpyServerPath,
+    this.scrcpyServerVersion,
+    this.scrcpyServerSha256,
   });
 
   final bool usesBundledAdb;
   final String? adbExecutablePath;
   final String? scrcpyServerPath;
+  final String? scrcpyServerVersion;
+  final String? scrcpyServerSha256;
 }

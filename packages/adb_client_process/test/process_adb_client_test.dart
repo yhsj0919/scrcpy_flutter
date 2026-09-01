@@ -125,4 +125,145 @@ void main() {
       expect(start.toString(), isNot(contains('192.0.2.1')));
     },
   );
+
+  test('discovers Wireless Debugging mDNS services', () async {
+    final services = await client.discoverMdnsServices();
+
+    expect(services, hasLength(3));
+    expect(services.first.type, AdbMdnsServiceType.pairing);
+    expect(services[1].type, AdbMdnsServiceType.connect);
+    expect(services.last.endpoint.host, '2001:db8::10');
+  });
+
+  test('accepts successful and repeated network operations', () async {
+    await client.connect(const AdbEndpoint(host: 'device.example', port: 5555));
+    await client.connect(
+      const AdbEndpoint(host: 'already.example', port: 5555),
+    );
+    await client.disconnect(
+      const AdbEndpoint(host: 'missing.example', port: 5555),
+    );
+  });
+
+  test('detects connect failures reported with exit code zero', () async {
+    await expectLater(
+      client.connect(const AdbEndpoint(host: 'fail.example', port: 5555)),
+      throwsA(
+        isA<AdbException>().having(
+          (error) => error.code,
+          'code',
+          AdbErrorCode.connectionFailed,
+        ),
+      ),
+    );
+  });
+
+  test('times out a network connection with a typed error', () async {
+    client = ProcessAdbClient(
+      executable: Platform.resolvedExecutable,
+      executableArguments: <String>[
+        '${Directory.current.path}${Platform.pathSeparator}test'
+            '${Platform.pathSeparator}fixtures${Platform.pathSeparator}'
+            'fake_adb.dart',
+      ],
+      connectionTimeout: const Duration(milliseconds: 200),
+    );
+
+    await expectLater(
+      client.connect(const AdbEndpoint(host: 'sleep.example', port: 5555)),
+      throwsA(
+        isA<AdbException>().having(
+          (error) => error.code,
+          'code',
+          AdbErrorCode.timedOut,
+        ),
+      ),
+    );
+  });
+
+  test('cancels an in-flight network connection', () async {
+    final token = AdbCancellationToken();
+    final connection = client.connect(
+      const AdbEndpoint(host: 'sleep.example', port: 5555),
+      cancellationToken: token,
+    );
+    Future<void>.delayed(const Duration(milliseconds: 200), token.cancel);
+
+    await expectLater(
+      connection,
+      throwsA(
+        isA<AdbException>().having(
+          (error) => error.code,
+          'code',
+          AdbErrorCode.cancelled,
+        ),
+      ),
+    );
+  });
+
+  test('detects disconnect failures reported with exit code zero', () async {
+    await expectLater(
+      client.disconnect(const AdbEndpoint(host: 'fail.example', port: 5555)),
+      throwsA(
+        isA<AdbException>().having(
+          (error) => error.code,
+          'code',
+          AdbErrorCode.connectionFailed,
+        ),
+      ),
+    );
+  });
+
+  test('detects pairing failures reported with exit code zero', () async {
+    await expectLater(
+      client.pair(
+        const AdbEndpoint(host: 'device.example', port: 37123),
+        '000000',
+      ),
+      throwsA(
+        isA<AdbException>().having(
+          (error) => error.code,
+          'code',
+          AdbErrorCode.pairingFailed,
+        ),
+      ),
+    );
+  });
+
+  test('detects an expired pairing code', () async {
+    await expectLater(
+      client.pair(
+        const AdbEndpoint(host: 'device.example', port: 37123),
+        '111111',
+      ),
+      throwsA(
+        isA<AdbException>().having(
+          (error) => error.code,
+          'code',
+          AdbErrorCode.pairingFailed,
+        ),
+      ),
+    );
+  });
+
+  test('cancels an in-flight pairing operation', () async {
+    final token = AdbCancellationToken();
+    final pairing = client.pair(
+      const AdbEndpoint(host: 'device.example', port: 37123),
+      '999999',
+      cancellationToken: token,
+    );
+    Future<void>.delayed(const Duration(milliseconds: 200), token.cancel);
+
+    await expectLater(
+      pairing,
+      throwsA(
+        isA<AdbException>().having(
+          (error) => error.code,
+          'code',
+          AdbErrorCode.cancelled,
+        ),
+      ),
+    );
+  });
 }

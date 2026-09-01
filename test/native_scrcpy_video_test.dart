@@ -8,9 +8,13 @@ final class _FakeVideoConnection implements ScrcpyVideoConnection {
   final sessionsController = StreamController<ScrcpyVideoCodecInfo>();
   final packetsController = StreamController<ScrcpyVideoPacket>();
   bool closed = false;
+  final doneCompleter = Completer<void>();
 
   @override
   int get bytesReceived => 0;
+
+  @override
+  Future<void> get done => doneCompleter.future;
 
   @override
   Future<ScrcpyVideoCodecInfo> get codec async => const ScrcpyVideoCodecInfo(
@@ -37,7 +41,9 @@ final class _FakeVideoConnection implements ScrcpyVideoConnection {
 
   @override
   Future<void> close() async {
+    if (closed) return;
     closed = true;
+    if (!doneCompleter.isCompleted) doneCompleter.complete();
     await sessionsController.close();
     await packetsController.close();
   }
@@ -92,4 +98,31 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('closes the connection when native texture disposal fails', () async {
+    const channel = MethodChannel('scrcpy_flutter/video');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          return switch (call.method) {
+            'create' => 1,
+            'dispose' => throw PlatformException(code: 'dispose_failed'),
+            'decode' => null,
+            'videoStats' => <String, Object>{'frames': 0},
+            _ => throw MissingPluginException(call.method),
+          };
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+    final connection = _FakeVideoConnection();
+    final controller = createNativeScrcpyVideoController(connection);
+    await controller.start();
+
+    await expectLater(controller.stop(), throwsA(isA<PlatformException>()));
+
+    expect(connection.closed, isTrue);
+    expect(controller.value.status, ScrcpyVideoStatus.error);
+    controller.dispose();
+  });
 }

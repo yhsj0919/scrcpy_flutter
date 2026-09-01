@@ -33,6 +33,9 @@ abstract interface class ScrcpyVideoConnection {
 
   int get bytesReceived;
 
+  /// Completes when the underlying video transport closes.
+  Future<void> get done;
+
   Future<void> close();
 }
 
@@ -46,7 +49,9 @@ abstract interface class ScrcpyVideoConnector {
 ScrcpyVideoConnector createScrcpyVideoConnector({
   required AdbClient adbClient,
   required String serverPath,
+  String? expectedServerSha256,
 }) => implementation.createScrcpyVideoConnector(
   adbClient: adbClient,
   serverPath: serverPath,
+  expectedServerSha256: expectedServerSha256,
 );
