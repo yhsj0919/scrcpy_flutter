@@ -17,6 +17,7 @@ migrate_working_dir/
 *.ipr
 *.iws
 .idea/
+.vs/
 
 # The .vscode folder contains launch configuration and tasks you configure in
 # VS Code which you may wish to be included in version control, so this line
@@ -29,5 +30,21 @@ migrate_working_dir/
 **/doc/api/
 .dart_tool/
 .flutter-plugins-dependencies
-/build/
-/coverage/
+.pub-cache/
+.pub/
+.widget_preview/
+**/build/
+**/build_*/
+**/coverage/
+**/.tool-state/
+**/.tmp/
+**/ios/Flutter/.last_build_id
+
+# Native build tools
+cmake-build-*/
+CMakeSettings.json
+
+# Android local build outputs
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/

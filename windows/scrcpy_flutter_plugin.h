@@ -5,14 +5,18 @@
 #include <flutter/plugin_registrar_windows.h>
 
 #include <memory>
+#include <cstdint>
+#include <unordered_map>
 
 namespace scrcpy_flutter {
+
+class NativeVideoTexture;
 
 class ScrcpyFlutterPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
 
-  ScrcpyFlutterPlugin();
+  explicit ScrcpyFlutterPlugin(flutter::PluginRegistrarWindows* registrar);
 
   virtual ~ScrcpyFlutterPlugin();
 
@@ -20,10 +24,13 @@ class ScrcpyFlutterPlugin : public flutter::Plugin {
   ScrcpyFlutterPlugin(const ScrcpyFlutterPlugin&) = delete;
   ScrcpyFlutterPlugin& operator=(const ScrcpyFlutterPlugin&) = delete;
 
-  // Called when a method is called on this plugin's channel from Dart.
-  void HandleMethodCall(
-      const flutter::MethodCall<flutter::EncodableValue> &method_call,
+  void HandleVideoMethodCall(
+      const flutter::MethodCall<flutter::EncodableValue>& method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
+ private:
+  flutter::TextureRegistrar* texture_registrar_;
+  std::unordered_map<int64_t, std::unique_ptr<NativeVideoTexture>> videos_;
 };
 
 }  // namespace scrcpy_flutter

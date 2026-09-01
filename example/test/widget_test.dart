@@ -1,27 +1,39 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
+import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 import 'package:scrcpy_flutter_example/main.dart';
 
-void main() {
-  testWidgets('Verify Platform version', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+final class _FakeDeviceService implements AdbDeviceService {
+  @override
+  Future<List<AdbDevice>> listDevices({
+    AdbCancellationToken? cancellationToken,
+  }) async => const <AdbDevice>[
+    AdbDevice(
+      serial: 'test-secret',
+      state: AdbDeviceState.device,
+      connectionType: AdbConnectionType.usb,
+      model: 'Pixel Test',
+    ),
+  ];
+}
 
-    // Verify that platform version is retrieved.
-    expect(
-      find.byWidgetPredicate(
-        (Widget widget) =>
-            widget is Text && widget.data!.startsWith('Running on:'),
+void main() {
+  testWidgets('shows devices returned by the plugin public API', (
+    tester,
+  ) async {
+    final client = ScrcpyClient(
+      adbClient: _FakeDeviceService(),
+      runtimeInfo: const ScrcpyRuntimeInfo(
+        usesBundledAdb: true,
+        adbExecutablePath: r'C:\demo\adb.exe',
       ),
-      findsOneWidget,
     );
+
+    await tester.pumpWidget(DeviceWallDemo(client: client));
+    await tester.pumpAndSettle();
+
+    expect(find.text('内置 ADB'), findsOneWidget);
+    expect(find.text('Pixel Test'), findsOneWidget);
+    expect(find.text('网络连接'), findsOneWidget);
+    expect(find.textContaining('test-secret'), findsNothing);
   });
 }

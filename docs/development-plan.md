@@ -1,6 +1,6 @@
 # 可执行开发计划与交接清单
 
-更新于 2026-08-31。
+更新于 2026-09-01。
 
 本文件是项目开发进度的唯一逐项事实来源。完成一项就将 `[ ]` 改成 `[x]`，并在对应条目下填写日期、提交/文件、验证结果和必要备注。不得只因“代码已经写完”而勾选，必须满足该项的完成判定。
 
@@ -16,11 +16,11 @@
 
 ## 当前交接摘要
 
-- 当前阶段：P0 工程基线。
-- 当前状态：架构与计划已建立，产品代码仍是 Flutter 插件模板。
-- 下一项：P0-01 检查并恢复 Windows 开发环境健康状态。
-- 当前阻塞：`flutter --version` 和 `adb devices` 曾出现阻塞，存在长期运行且 CPU 占用异常的 Dart/ADB 进程，需先确认来源。
-- 已选基线：Windows、scrcpy 4.1、FVP 0.38.1、USB ADB、H.264、首版无音频。
+- 当前阶段：P1 视频技术验证。
+- 当前状态：P0 工程基线和 scrcpy 4.1 视频拆包已完成；Windows Media Foundation 后端已通过真机实际解码帧计数测试。
+- 下一项：用重新构建的 Demo 视觉确认实时刷新和首屏耗时，再实现积压时保留最新可解帧。
+- 当前阻塞：无协议或解码阻塞；仍需视觉验收和性能数据，不能仅凭帧计数勾选 P1-05。
+- 已选基线：Windows、scrcpy 4.1、平台原生解码、网络/USB ADB、H.264、首版无音频。
 - 首版功能闭环：USB/网络/配对码连接，查看当前画面，画质配置，scrcpy 基础控制和模拟触摸。
 - 交付形态：从 P0 起按可嵌入 Flutter 插件实现；example 只消费插件公开 API，不承载核心逻辑。
 - 早期增强：设备详情、文件管理、运行状态，以及安装/卸载等批量 ADB 操作。
@@ -33,116 +33,108 @@
 
 阶段完成判定：P0 全部条目勾选，静态检查、测试和 Windows 示例构建均通过。
 
-- [ ] **P0-01 环境健康检查**
+- [x] **P0-01 环境健康检查**
   - 完成判定：`flutter doctor -v`、`flutter --version`、`adb devices -l` 能在合理时间内返回；确认 Visual Studio C++、Windows SDK、CMake 和 Ninja 可用。
   - 验证证据：将关键版本写入 `docs/environment.md`，不记录设备序列号。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-08-31
+  - 提交/文件：`docs/environment.md`
+  - 备注：Flutter 3.47.2、Dart 3.13.2、VS 2026、Windows SDK 10.0.26100、CMake 3.22.1、Ninja 1.10.2 已验证；doctor 和设备查询正常返回。`flutter.bat` 锁问题使用同 SDK snapshot 非破坏性绕过。
 
-- [ ] **P0-02 固定首版依赖版本**
-  - 完成判定：文档和依赖配置明确固定 scrcpy 4.1、FVP 0.38.1；记录 server 文件来源、SHA-256 和许可证。
+- [x] **P0-02 固定首版依赖版本**
+  - 完成判定：文档和依赖配置明确固定 scrcpy 4.1；记录 server 文件来源、SHA-256 和许可证。
   - 验证证据：`pubspec.lock`、第三方依赖清单及校验值可复查。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：若 FVP 0.38.1 无法安全暴露 `appendBuffer`，记录变更决策后才能更换版本。
+  - 完成日期：2026-08-31
+  - 提交/文件：`pubspec.yaml`、`example/pubspec.lock`、`docs/third-party-components.md`、`windows/third_party/`
+  - 备注：固定 scrcpy server 4.1，server/许可证 SHA-256 可复查；当前 Windows 视频后端为 Media Foundation。
 
-- [ ] **P0-03 定义最小公开 API**
+- [x] **P0-03 定义最小公开 API**
   - 完成判定：确定插件入口、能力查询、设备服务、会话配置/状态、错误码、视频控制器、视频 Widget 和输入层的 Dart API；不暴露上游内部对象，宿主无需导入 `lib/src`。
   - 验证证据：API 文档和对应单元测试通过。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-08-31
+  - 提交/文件：`lib/scrcpy_flutter.dart`、`lib/src/`、`docs/public-api.md`、`test/`
+  - 备注：能力查询、会话配置/状态、错误码、视频控制器、`ScrcpyVideoView` 和 `ScrcpyInputLayer` 已建立；定向 analyzer 无问题，Session、输入和视频 Widget 测试通过。
 
-- [ ] **P0-09 建立独立 ADB 模块边界**
-  - 完成判定：ADB 领域 API 与 scrcpy Session 分离；设备发现、连接、配对、shell、sync、包管理和 forward 通过接口提供；ADB 模块不依赖 FVP、scrcpy 协议或 Flutter Widget。
+- [x] **P0-09 建立独立 ADB 模块边界**
+  - 完成判定：ADB 领域 API 与 scrcpy Session 分离；设备发现、连接、配对、shell、sync、包管理和 forward 通过接口提供；ADB 模块不依赖 scrcpy 协议或 Flutter Widget。
   - 验证证据：依赖关系图、package 分析通过、使用 fake ADB backend 的 scrcpy Session 单元测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：先在同一仓库独立模块/package，不立即拆独立仓库或发布。
+  - 完成日期：2026-08-31
+  - 提交/文件：`packages/adb_client/`、`packages/adb_client_process/`、`docs/architecture.md`、`test/scrcpy_flutter_test.dart`
+  - 备注：设备发现、连接、配对、shell、sync、包管理和 forward 均为独立接口；package analyzer 无问题，ScrcpySession fake backend 测试通过。暂不拆独立仓库或发布。
 
-- [ ] **P0-10 实现桌面 ADB process 后端骨架**
+- [x] **P0-10 实现桌面 ADB process 后端骨架**
   - 完成判定：封装可执行文件定位、结构化参数、stdin、超时、取消、stdout/stderr、exit code 和脱敏日志；调用方不直接使用 `Process.run('adb', ...)`。
   - 验证证据：fake adb executable 测试覆盖成功、失败、超时、取消和大输出。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：Windows 首版使用该后端；wire protocol 后端后期按平台增加。
+  - 完成日期：2026-08-31
+  - 提交/文件：`packages/adb_client_process/`、`windows/CMakeLists.txt`、`windows/third_party/platform-tools/`
+  - 备注：Windows 首版使用该后端；wire protocol 后端后期按平台增加。fake executable 测试覆盖成功、非零退出、二进制 stdin、超时、取消和 2 MB 输出；设备解析与内置路径测试合计 10 项通过。
 
-- [ ] **P0-06 建立插件边界和目录约束**
+- [x] **P0-06 建立插件边界和目录约束**
   - 完成判定：核心逻辑位于插件 `lib/` 和各平台目录；example 只导入公开入口；不存在从 example 反向依赖核心代码。
   - 验证证据：目录说明、公开导出测试和 `rg` 检查结果。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-08-31
+  - 提交/文件：`lib/scrcpy_flutter.dart`、`example/lib/main.dart`、`docs/public-api.md`
+  - 备注：example 只导入插件公开入口；核心设备发现和 Session 逻辑全部位于插件/package 内。
 
-- [ ] **P0-07 设计多实例与宿主生命周期**
+- [x] **P0-07 设计多实例与宿主生命周期**
   - 完成判定：记录 ScrcpyClient、Session、Player、texture、ADB transport 和批量任务的所有权；支持同进程多实例；定义 dispose/close/cancel、窗口关闭和异常退出行为。
   - 验证证据：生命周期设计文档和 fake 实现的并发/重复释放测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：禁止只能清理一个会话的全局槽位。
+  - 完成日期：2026-08-31
+  - 提交/文件：`docs/lifecycle.md`、`lib/src/scrcpy_session.dart`、`test/scrcpy_flutter_test.dart`
+  - 备注：禁止只能清理一个会话的全局槽位。所有权和清理顺序已记录，并发 prepare 合并与幂等 dispose 测试通过。
 
-- [ ] **P0-08 定义资源打包与覆盖策略**
-  - 完成判定：明确 scrcpy server、FVP/libmdk 和其他二进制由插件如何打包、校验、定位和升级；宿主可显式覆盖，但默认无需安装全局 scrcpy。
+- [x] **P0-08 定义资源打包与覆盖策略**
+  - 完成判定：明确 scrcpy server、ADB 和其他二进制由插件如何打包、校验、定位和升级；宿主可显式覆盖，但默认无需安装全局 scrcpy 或 ADB。
   - 验证证据：资源清单、SHA-256、开发/发布构建路径测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：不得修改宿主或系统全局 PATH。
+  - 完成日期：2026-08-31
+  - 提交/文件：`windows/CMakeLists.txt`、`example/windows/CMakeLists.txt`、`lib/src/default_scrcpy_client_io.dart`、`docs/third-party-components.md`
+  - 备注：ADB、scrcpy server 和许可证进入 Release 产物；ADB/server 路径可由宿主覆盖。默认不修改 PATH、不要求全局安装。
 
-- [ ] **P0-04 建立日志与敏感信息规则**
+- [x] **P0-04 建立日志与敏感信息规则**
   - 完成判定：日志具备级别、session ID 和模块来源；默认脱敏设备序列号；错误包含机器可读代码。
   - 验证证据：脱敏及错误模型单元测试通过。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-08-31
+  - 提交/文件：`lib/src/scrcpy_log.dart`、`lib/src/scrcpy_error.dart`、`packages/adb_client/lib/src/`、`test/scrcpy_log_test.dart`
+  - 备注：日志包含级别、来源和 session ID；结构化 serial、pairing code、password、token 默认脱敏；ADB/Scrcpy 错误码测试通过。
 
-- [ ] **P0-05 建立基础质量门**
+- [x] **P0-05 建立基础质量门**
   - 完成判定：`dart format --output=none --set-exit-if-changed .`、`flutter analyze`、`flutter test` 和 Windows example 构建通过。
   - 验证证据：在本条记录命令结果摘要；后续可迁移到 CI。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-08-31
+  - 提交/文件：`docs/environment.md`、`test/`、`example/test/`
+  - 备注：format 36 文件无变化；完整 analyze 无问题；根插件 13 项、Demo 1 项、ADB packages 14 项测试通过；Windows Debug/Release Demo 构建通过且内置资源可运行/校验。
 
 ## P1：视频技术验证（预计 3–5 天）
 
 阶段完成判定：真机连续显示 30 分钟，不经 Dart 传输解码后像素，没有不可恢复错误。
 
-- [ ] **P1-01 接入 FVP 0.38.1**
-  - 完成判定：Windows 示例能够创建、显示和销毁一个 FVP 纹理；硬件/软件解码器信息可记录。
-  - 验证证据：最小媒体播放测试和资源销毁日志。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
-
-- [ ] **P1-02 暴露 FVP `appendBuffer`**
-  - 完成判定：实现受控的 `Uint8List`/native buffer 输入 API，明确 buffer 生命周期、背压、结束和错误语义。
-  - 验证证据：分片边界随机化测试能够持续送入测试 H.264 流。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
-
-- [ ] **P1-03 建立 scrcpy 4.1 视频连接**
+- [x] **P1-01 建立 scrcpy 4.1 视频连接**
   - 完成判定：使用匹配 server 建立连接并读取 H.264；SCID、端口和远端路径不与其他会话冲突。
   - 验证证据：连接日志、server 版本校验和首批数据统计。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-08-31
+  - 提交/文件：`lib/src/scrcpy_video_connection*.dart`、`packages/adb_client/lib/src/adb_client_base.dart`、`packages/adb_client_process/lib/src/process_adb_client.dart`、`example/integration_test/native_video_test.dart`
+  - 备注：每会话使用随机 31-bit SCID、唯一远端 server 路径和 `adb forward tcp:0`；由插件持有长运行 ADB shell 句柄。ADB forward 的 TCP 假成功不作为 ready，候选连接必须收到并缓存首个 H.264 字节块才返回。真机验证 server 4.1、动态端口、首批数据统计和逆序清理通过。
 
-- [ ] **P1-04 Flutter 显示真机首帧**
+- [ ] **P1-02 Flutter 显示真机首帧**
   - 完成判定：Flutter Widget 显示正确方向、比例和内容的第一帧，并进入稳定播放状态。
   - 验证证据：记录首帧耗时、解码器、分辨率、FPS、CPU/GPU/内存基线。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：进行中。`ScrcpyVideoConnection → Media Foundation → Flutter Texture` 已在真机出首帧；Demo 设备详情页支持启动/停止画面。尚缺完整性能基线和连续播放记录。
 
-- [ ] **P1-05 验证旋转和动态分辨率**
+- [ ] **P1-03 帧级原生低延迟视频后端**
+  - 交付物：保留 scrcpy codec/session/frame metadata 的 Dart 拆包器；统一原生解码后端接口；Windows Media Foundation 解码与最新帧 Flutter Texture。
+  - 验收：首屏延迟和触摸到画面延迟均可测量；连续操作画面实时刷新；解码积压时只保留最新可解帧；不在 Dart 层逐帧复制 RGBA。
+  - 参考：`scrcpy_video_view 0.0.1` 的 macOS 实现使用 scrcpy 12 字节帧头、VideoToolbox、单一 latest pixel buffer 和 `textureFrameAvailable()`；其代码仅支持 macOS，不能直接作为 Windows 依赖。
+  - 进度（2026-09-01）：已按 scrcpy 4.1 修正 codec/session/frame 拆包。Windows MF 后端设置 `MF_LOW_LATENCY` 后严格测试通过；已修复 NV12 stride 和 RGBA 通道顺序。NV12→RGBA 已移到独立线程，转换队列只保留最新解码帧。Demo 已支持最大尺寸、FPS、码率选择，并每秒显示实际 FPS、累计显示帧、编码包和接收流量；真机集成测试 `frames=11 / inputs=11` 通过。尚需测量端到端延迟、旋转和 D3D11 零拷贝后勾选。
+
+- [ ] **P1-04 验证旋转和动态分辨率**
   - 完成判定：横竖屏切换不会永久黑屏或崩溃；宽高比和 texture 生命周期正确。
   - 验证证据：至少连续旋转 20 次，记录是否重建 Player/texture。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：2026-09-01 已将 scrcpy 4.1 的重复 session 尺寸事件公开到视频连接；控制器在尺寸变化时暂停包消费、串行释放旧 Texture、按新宽高创建解码器并恢复流。自动化测试覆盖 1080×1920 → 1920×1080、旧 Texture 释放和停止清理。尚需真机连续旋转 20 次后勾选。
 
-- [ ] **P1-06 视频稳定性验收**
+- [ ] **P1-05 视频稳定性验收**
   - 完成判定：连续播放 30 分钟，无持续延迟增长、资源明显泄漏或不可恢复错误。
   - 验证证据：`docs/reports/p1-video-spike.md`。
   - 完成日期：
@@ -164,8 +156,8 @@
   - 完成判定：支持输入 `IP:端口` 执行 connect/disconnect，具有超时、取消、重复连接处理和明确错误码。
   - 验证证据：正确地址、错误地址、超时、重复连接和断开测试。
   - 完成日期：
-  - 提交/文件：
-  - 备注：不得把任意用户输入拼接成 shell 字符串。
+  - 提交/文件：`packages/adb_client/lib/src/adb_endpoint.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`
+  - 备注：2026-09-01 已完成主机/IP、端口和 IPv6 地址解析，`ScrcpyClient` 公开 connect/disconnect，Demo 提供网络连接对话框及网络设备断开按钮，操作完成自动刷新列表。参数通过 `Process.start` 参数数组传递，不拼接 shell 字符串；尚需补齐超时、重复连接和真机错误场景后勾选。
 
 - [ ] **P2-07 Wireless Debugging 配对码连接**
   - 完成判定：支持输入/发现配对地址和配对码执行 `adb pair`，成功后连接调试地址；配对码不写日志、不持久化。
@@ -213,33 +205,33 @@
 
 阶段完成判定：横竖屏与窗口缩放下输入映射准确，控制连接连续操作无协议错位。
 
-- [ ] **P3-01 scrcpy 4.1 控制消息序列化**
+- [x] **P3-01 scrcpy 4.1 控制消息序列化**
   - 完成判定：覆盖触控、按键、滚轮和文本所需消息，字段与 4.1 server 单元测试/源码一致。
   - 验证证据：二进制 fixture 测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-01
+  - 提交/文件：`lib/src/scrcpy_control_message.dart`、`test/scrcpy_control_message_test.dart`
+  - 备注：按上游 4.1 的二进制 fixture 实现 32 字节触摸、21 字节滚轮、14 字节按键和 UTF-8 文本消息；坐标、尺寸、压力、64 位 pointer ID、按钮和定点滚动量均按大端序编码。
 
-- [ ] **P3-02 Flutter 输入覆盖层**
+- [x] **P3-02 Flutter 输入覆盖层**
   - 完成判定：实现 pointer down/move/up/cancel、鼠标按键、滚轮和键盘焦点，不阻断视频布局。
   - 验证证据：Widget 测试和事件日志。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-01
+  - 提交/文件：`lib/src/scrcpy_input.dart`、`example/lib/main.dart`、`test/scrcpy_input_test.dart`
+  - 备注：pointer down/move/up/cancel/hover/scroll 覆盖层已接入 Demo Texture，并通过同一 SCID/ADB forward 的第二条 control socket 发送；Focus 已映射 Escape、Home、方向、Enter、Backspace、Delete、Tab、Space、音量及字母数字键。Ctrl/Alt/Meta 等正常系统组合键继续放行；Windows 系统音量键拦截方案因实机验证无效已撤销。
 
 - [ ] **P3-03 坐标映射**
   - 完成判定：正确处理 contain/cover、黑边、裁剪、DPI、窗口缩放、横竖屏和动态视频尺寸。
   - 验证证据：纯函数单元测试覆盖边界和四角坐标。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：2026-09-01 已实现 `BoxFit.contain/cover`、居中对齐、黑边过滤和 cover 源裁剪补偿；Demo 随动态视频尺寸更新映射。纯函数测试已覆盖 contain 黑边/边界和 cover 裁剪，尚需补齐四角、非居中 alignment 与真机旋转验证后勾选。
 
 - [ ] **P3-04 基础导航与输入**
   - 完成判定：点击、长按、拖动/滑动、滚轮、Back、Home、Recent Apps、Power、Wake、音量、Enter、Delete 和基础键盘输入可用。
   - 验证证据：真机操作清单逐项通过。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：2026-09-01 真机双 socket 集成测试通过，control 通道成功发送 CANCEL 消息且视频持续解码 `frames=11 / inputs=11`。Demo 已可尝试点击、拖动、滚轮和键盘控制。坐标映射已支持 contain/cover 和黑边过滤，仍需按本项清单逐项真机验收。
 
 - [ ] **P3-06 多指与手势模拟**
   - 完成判定：正确维护多个 pointer ID，支持双指缩放等基础多指事件，取消/抬起不会遗留触点。
@@ -465,7 +457,7 @@
   - 备注：
 
 - [ ] **P8-04 Android scrcpy 视频与控制原型**
-  - 完成判定：通过 MediaCodec/FVP 显示目标设备画面并完成基础触摸控制，持续运行 30 分钟。
+  - 完成判定：通过 MediaCodec 显示目标设备画面并完成基础触摸控制，持续运行 30 分钟。
   - 验证证据：`docs/reports/p8-android-host.md`。
   - 完成日期：
   - 提交/文件：
@@ -528,7 +520,7 @@
   - 备注：允许最终仅支持网络 ADB。
 
 - [ ] **P8-13 鸿蒙 scrcpy 视频与控制原型**
-  - 完成判定：鸿蒙宿主使用 FVP/OHOS 或替代硬解后端显示 Android 画面，并完成基础模拟触摸，持续运行 30 分钟。
+  - 完成判定：鸿蒙宿主使用平台原生硬解后端显示 Android 画面，并完成基础模拟触摸，持续运行 30 分钟。
   - 验证证据：`docs/reports/p8-harmony-host.md`，记录解码器、延迟和资源占用。
   - 完成日期：
   - 提交/文件：
@@ -537,7 +529,7 @@
 ## P7：发布准备（续）
 
 - [ ] **P7-02 第三方许可证与发行检查**
-  - 完成判定：scrcpy、FVP、libmdk、FFmpeg 及二进制分发条款清晰，NOTICE/许可证文件齐全。
+  - 完成判定：scrcpy、ADB、平台视频依赖及二进制分发条款清晰，NOTICE/许可证文件齐全。
   - 验证证据：第三方组件清单和人工审核记录。
   - 完成日期：
   - 提交/文件：
@@ -579,17 +571,21 @@
 | 日期 | 决策/变更 | 原因 | 影响 |
 | --- | --- | --- | --- |
 | 2026-08-31 | 首发平台暂定 Windows | 产品目标首先是桌面设备墙 | 其他平台保留模板但不承诺支持 |
-| 2026-08-31 | 暂定 scrcpy 4.1、FVP 0.38.1 | 固定协议和视频后端，避免跟随浮动版本开发 | 升级必须经过协议及真机回归 |
+| 2026-08-31 | 暂定 scrcpy 4.1 | 固定协议版本，避免客户端和 server 不匹配 | 升级必须经过协议及真机回归 |
 | 2026-08-31 | 稳定目标 8 台、压力测试 16 台 | 先通过实测确定产品上限 | 16 台不是预先承诺的稳定能力 |
 | 2026-08-31 | 首版闭环加入 USB/网络/配对码连接、画面、画质和模拟触摸 | 覆盖实际设备接入和控制需求 | P2、P3 增加连接与控制任务 |
 | 2026-08-31 | 设备详情、文件管理、运行状态列为 S1 | 有价值但不阻塞画面与控制主链路 | 在单设备稳定后逐步实现 |
 | 2026-08-31 | 批量安装/卸载前置，设备墙和触摸广播后置 | 先交付风险较低且实用的批量 ADB 能力 | 建立统一批处理安全框架 |
 | 2026-08-31 | 应用多开使用 scrcpy virtual display 做 S2 验证 | 能力受 Android 版本和厂商实现影响 | 先做兼容矩阵，不作为首版承诺 |
 | 2026-08-31 | 后期增加 Android、iOS 和 Web 可行性门 | Android 与 Chromium Web 有技术路径，iOS 风险较高 | 新增 P8，各平台独立作继续/终止决策 |
-| 2026-08-31 | 增加鸿蒙宿主控制 Android | HarmonyOS 具备网络和 USB 能力，FVP 已支持 OHOS，但 USB 权限需验证 | P8 新增工具链、网络、USB、视频控制四项；不支持鸿蒙被控 |
+| 2026-08-31 | 增加鸿蒙宿主控制 Android | HarmonyOS 具备网络能力，USB 权限和原生视频后端仍需验证 | P8 新增工具链、网络、USB、视频控制四项；不支持鸿蒙被控 |
 | 2026-08-31 | 明确项目以可嵌入 Flutter 插件交付 | 后期需要嵌入其他应用，不能先做成绑定业务的独立程序 | 插件优先成为 P0 强制约束，新增边界、多实例和资源打包验收 |
 | 2026-08-31 | ADB 抽为仓库内独立模块/package，暂不拆独立仓库 | ADB 被设备管理、批量任务、scrcpy 和未来多平台共同使用，但过早独立发布会增加维护成本 | scrcpy 只依赖 ADB 接口；Windows 先实现 process 后端，移动/Web 后加 transport |
 | 2026-08-31 | `scrcpy_video_view 0.0.1` 仅作参考 | 仅支持 macOS，逐帧经过 MethodChannel，且协议头假设与 4.1 不一致 | 借鉴状态机、错误模型和生命周期测试，不直接依赖 |
+| 2026-08-31 | P0 实现从独立 ADB package 与 process 后端开始 | ADB 是连接、设备管理、批量任务和 scrcpy 会话的共同底座 | 根插件通过注入的 `AdbClient` 使用能力；平台后端可替换 |
+| 2026-08-31 | Windows 插件内置官方 Platform-Tools ADB | 最终用户不应被要求安装 Android SDK 或配置 PATH | 默认从应用目录加载；保留明确路径覆盖；二进制、DLL、NOTICE 和 SHA-256 一并管理 |
+| 2026-08-31 | 每个可验证增量同步维护 example | 方便在真机和桌面环境尽早发现集成问题 | 首个 Demo 已展示内置 ADB 信息、刷新状态和脱敏设备列表；example 只使用插件公开 API |
+| 2026-08-31 | 暂不引入 `flutter_adb` | 其纯 Dart 实现适合网络 ADB，但当前缺少 Windows 首版依赖的 USB、完整 sync 和 forward 能力 | 保持官方内置 ADB process 后端；统一接口继续允许后期增加 wire transport |
 
 ## 交接记录
 

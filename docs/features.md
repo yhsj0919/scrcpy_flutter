@@ -128,7 +128,7 @@ ADB 能力作为仓库内独立模块/package 维护，与 scrcpy 视频及控�
 
 ### Android 宿主
 
-技术上可行性较高。Android 官方 USB Host API 可以枚举 USB 设备、申请用户授权并直接读写 USB endpoint，因此可以实现不依赖本机 `adb` 可执行文件的 ADB client。网络 ADB 和配对协议同样可由应用实现。视频可使用 Android MediaCodec 或 FVP 输出到 Flutter texture。
+技术上可行性较高。Android 官方 USB Host API 可以枚举 USB 设备、申请用户授权并直接读写 USB endpoint，因此可以实现不依赖本机 `adb` 可执行文件的 ADB client。网络 ADB 和配对协议同样可由应用实现。视频优先使用 Android MediaCodec 输出到 Flutter Texture。
 
 需要验证：双 Android 设备的供电/OTG 模式、USB 权限生命周期、ADB RSA 密钥安全存储、后台限制、多设备 Hub，以及目标设备同时充电的问题。
 
@@ -140,16 +140,15 @@ ADB 能力作为仓库内独立模块/package 维护，与 scrcpy 视频及控�
 
 目标范围严格限定为：HarmonyOS/OpenHarmony 手机上的 Flutter 应用作为 ADB/scrcpy 客户端，连接和控制 Android 设备；不实现控制 HarmonyOS，也不在 HarmonyOS 上运行 scrcpy server。
 
-网络路线具有较高可行性：HarmonyOS 提供 TCP socket 和 mDNS 等网络能力，可以承载网络 ADB、Wireless Debugging 配对和 scrcpy socket。USB 路线需要验证普通应用能否获得所需 USB DDK/USB Host 权限；官方 USB 能力包含设备枚举、接口声明和 bulk/control transfer，但相关系统能力与权限可能限制发行范围。视频方面，FVP 已包含 OHOS 平台支持，可作为优先验证后端。
+网络路线具有较高可行性：HarmonyOS 提供 TCP socket 和 mDNS 等网络能力，可以承载网络 ADB、Wireless Debugging 配对和 scrcpy socket。USB 路线需要验证普通应用能否获得所需 USB DDK/USB Host 权限；官方 USB 能力包含设备枚举、接口声明和 bulk/control transfer，但相关系统能力与权限可能限制发行范围。视频后端需按 HarmonyOS 原生媒体能力单独验证。
 
-需要单独验证 Flutter OHOS 工具链、平台插件、USB 权限、ADB RSA/TLS、FVP texture、后台限制及应用市场发行条件。USB 权限不满足时，允许只支持网络 ADB。
+需要单独验证 Flutter OHOS 工具链、平台插件、USB 权限、ADB RSA/TLS、原生 Texture、后台限制及应用市场发行条件。USB 权限不满足时，允许只支持网络 ADB。
 
 参考资料：
 
 - HarmonyOS USB 服务：<https://developer.huawei.com/consumer/en/doc/harmonyos-guides-V13/usb-overview-V13>
 - HarmonyOS USB DDK：<https://developer.huawei.com/consumer/en/doc/harmonyos-references/capi-usb-ddk-api-h>
 - HarmonyOS Socket API：<https://developer.huawei.com/consumer/en/doc/harmonyos-references/arkts-api>
-- FVP OHOS 支持：<https://github.com/wang-bin/fvp>
 
 ### Web
 
