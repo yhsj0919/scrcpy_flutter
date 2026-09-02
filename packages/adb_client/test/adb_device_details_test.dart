@@ -1,9 +1,9 @@
 import 'dart:convert';
 
-import 'package:flutter_test/flutter_test.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:test/test.dart';
+import 'package:adb_client/adb_client.dart';
 
-final class _DetailsAdbClient implements AdbDeviceService, AdbShellService {
+final class _DetailsAdbClient implements AdbClient {
   _DetailsAdbClient(this.outputs);
 
   final Map<String, AdbCommandResult> outputs;
@@ -19,6 +19,9 @@ final class _DetailsAdbClient implements AdbDeviceService, AdbShellService {
     List<String> arguments, {
     AdbCancellationToken? cancellationToken,
   }) async => outputs[arguments.join(' ')] ?? _result('', exitCode: 1);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 AdbCommandResult _result(String output, {int exitCode = 0}) => AdbCommandResult(
@@ -31,31 +34,31 @@ AdbCommandResult _result(String output, {int exitCode = 0}) => AdbCommandResult(
 void main() {
   test('device detail parsers prefer active screen overrides', () {
     expect(
-      ScrcpyDeviceDetailsParser.screenSize(
+      AdbDeviceDetailsParser.screenSize(
         'Physical size: 1440x3200\nOverride size: 1080x2400\n',
       ),
       (1080, 2400),
     );
     expect(
-      ScrcpyDeviceDetailsParser.density(
+      AdbDeviceDetailsParser.density(
         'Physical density: 560\nOverride density: 420\n',
       ),
       420,
     );
-    final battery = ScrcpyDeviceDetailsParser.battery(
+    final battery = AdbDeviceDetailsParser.battery(
       '  level: 42\n  scale: 100\n  temperature: 315\n',
     );
     expect(battery.level, 42);
     expect(battery.temperatureCelsius, 31.5);
     expect(
-      ScrcpyDeviceDetailsParser.storage(
+      AdbDeviceDetailsParser.storage(
         'Filesystem 1K-blocks Used Available Use% Mounted on\n'
         '/dev/block/dm-8 100000 40000 60000 40% /data\n',
       ),
       (totalBytes: 102400000, availableBytes: 61440000),
     );
     expect(
-      ScrcpyDeviceDetailsParser.uptime('90061.25 123.00\n'),
+      AdbDeviceDetailsParser.uptime('90061.25 123.00\n'),
       const Duration(milliseconds: 90061250),
     );
   });
@@ -76,7 +79,7 @@ void main() {
       'df -k /data': _result('/dev/block/dm-8 200000 50000 150000 25% /data\n'),
       'cat /proc/uptime': _result('3600.5 10.0\n'),
     });
-    final details = await ScrcpyClient(adbClient: adb).getDeviceDetails(
+    final details = await AdbToolkit(adb).getDeviceDetails(
       const AdbDevice(
         serial: 'secret-serial',
         state: AdbDeviceState.device,

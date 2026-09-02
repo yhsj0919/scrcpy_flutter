@@ -45,6 +45,12 @@ final class _FakeClipboardInput implements ScrcpyInputController {
 
   @override
   Future<void> sendText(String text) async {}
+
+  @override
+  Future<void> startApplication(ScrcpyApplicationLaunch application) async {}
+
+  @override
+  Future<void> resizeDisplay({required int width, required int height}) async {}
 }
 
 void main() {

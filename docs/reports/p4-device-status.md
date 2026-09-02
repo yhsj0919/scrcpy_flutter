@@ -4,7 +4,7 @@
 
 ## 公开能力
 
-`ScrcpyClient.createDeviceStatusMonitor()` 返回 `ScrcpyDeviceStatusMonitor`，状态流包含：
+`AdbToolkit.status()` 返回 `AdbDeviceStatusMonitor`，状态流包含：
 
 - 整机 CPU 使用率；
 - 总内存和可用内存；
@@ -86,3 +86,4 @@ Windows 上通过 `example/integration_test/device_status_test.dart` 对当前 A
 ## 结论
 
 P4-07 验收通过。
+

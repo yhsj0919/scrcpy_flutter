@@ -23,3 +23,4 @@ Windows 构建默认随插件分发固定版本的 ADB 及其运行库，宿主�
 4. 保留 scrcpy codec、session 和 frame metadata，拆分 H.264 编码包。
 5. 通过平台原生解码器输出 Flutter Texture。
 6. 覆盖输入层，映射坐标并发送触摸事件。
+

@@ -1,7 +1,7 @@
-import 'package:flutter_test/flutter_test.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:test/test.dart';
+import 'package:adb_client/adb_client.dart';
 
-final class _SequenceAdbDevices implements AdbDeviceService {
+final class _SequenceAdbDevices implements AdbClient {
   _SequenceAdbDevices(this.snapshots);
 
   final List<List<AdbDevice>> snapshots;
@@ -11,6 +11,14 @@ final class _SequenceAdbDevices implements AdbDeviceService {
   Future<List<AdbDevice>> listDevices({
     AdbCancellationToken? cancellationToken,
   }) async => snapshots[(calls++).clamp(0, snapshots.length - 1)];
+
+  @override
+  Future<List<AdbMdnsService>> discoverMdnsServices({
+    AdbCancellationToken? cancellationToken,
+  }) async => const <AdbMdnsService>[];
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {
@@ -36,11 +44,11 @@ void main() {
       <AdbDevice>[usbReady, networkOffline],
       <AdbDevice>[networkOffline],
     ]);
-    final monitor = ScrcpyDeviceMonitor(
-      ScrcpyClient(adbClient: adb),
+    final monitor = AdbDeviceMonitor(
+      AdbToolkit(adb),
       interval: const Duration(days: 1),
     );
-    final emitted = <ScrcpyDeviceSnapshot>[];
+    final emitted = <AdbDeviceSnapshot>[];
     final subscription = monitor.snapshots.listen(emitted.add);
 
     final initial = await monitor.start();
@@ -65,10 +73,8 @@ void main() {
   });
 
   test('monitor rejects invalid interval and refresh after close', () async {
-    final monitor = ScrcpyDeviceMonitor(
-      ScrcpyClient(
-        adbClient: _SequenceAdbDevices(<List<AdbDevice>>[const <AdbDevice>[]]),
-      ),
+    final monitor = AdbDeviceMonitor(
+      AdbToolkit(_SequenceAdbDevices(<List<AdbDevice>>[const <AdbDevice>[]])),
       interval: Duration.zero,
     );
     await expectLater(monitor.start(), throwsArgumentError);

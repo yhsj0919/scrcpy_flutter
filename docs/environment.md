@@ -42,3 +42,4 @@
 - `flutter.bat` 在当前自动化身份下受 SDK 锁/权限影响；直接运行同 SDK 的 `flutter_tools.snapshot` 可以完整执行分析、测试、doctor 和构建。
 - Android SDK license 状态未知，后续开始 Android 宿主构建前处理。
 - 仍有更早启动且来源不明的 Dart/ADB 进程；本阶段没有结束它们。
+

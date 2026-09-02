@@ -4,7 +4,7 @@
 
 ## 公开 API
 
-`ScrcpyBatchTask` 提供通用但不绑定 shell 的批量调度能力：
+`AdbBatchTask` 提供通用但不绑定 shell 的批量调度能力：
 
 - 可配置最大并发数；
 - 每设备独立超时和取消令牌；
@@ -14,7 +14,7 @@
 - 广播不可变的逐设备状态快照；
 - 单项失败不终止其他设备。
 
-`ScrcpyClient.createBatchPackageManager()` 公开安全的包管理封装：
+`AdbToolkit.batchPackages` 公开安全的包管理封装：
 
 - `installTask()`：APK 路径、覆盖安装、并发、超时、重试；
 - `uninstallTask()`：包名、保留数据、并发、超时、重试；
@@ -70,3 +70,4 @@
 ## 结论
 
 P4-08 的 API、调度、安全确认、状态展示和故障隔离完成。真实 APK 变更作为专用测试资产到位后的补充设备验收，不阻塞进入 P5。
+

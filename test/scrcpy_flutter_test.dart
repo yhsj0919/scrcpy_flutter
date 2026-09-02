@@ -2,9 +2,10 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
-class FakeAdbClient implements AdbDeviceService {
+class FakeAdbClient implements AdbClient {
   var calls = 0;
 
   @override
@@ -20,16 +21,22 @@ class FakeAdbClient implements AdbDeviceService {
       ),
     ];
   }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-class EmptyAdbClient implements AdbDeviceService {
+class EmptyAdbClient implements AdbClient {
   @override
   Future<List<AdbDevice>> listDevices({
     AdbCancellationToken? cancellationToken,
   }) async => const <AdbDevice>[];
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-class DelayedAdbClient implements AdbDeviceService {
+class DelayedAdbClient implements AdbClient {
   var calls = 0;
 
   @override
@@ -46,10 +53,12 @@ class DelayedAdbClient implements AdbDeviceService {
       ),
     ];
   }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-class FakeConnectionAdbClient
-    implements AdbDeviceService, AdbConnectionService {
+class FakeConnectionAdbClient implements AdbClient, AdbConnectionService {
   AdbEndpoint? connected;
   AdbEndpoint? disconnected;
   AdbEndpoint? paired;
@@ -81,10 +90,13 @@ class FakeConnectionAdbClient
     paired = endpoint;
     receivedPairingCode = pairingCode;
   }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class FakeUnifiedDiscoveryAdbClient
-    implements AdbDeviceService, AdbMdnsDiscoveryService {
+    implements AdbClient, AdbMdnsDiscoveryService {
   @override
   Future<List<AdbDevice>> listDevices({
     AdbCancellationToken? cancellationToken,
@@ -122,11 +134,15 @@ class FakeUnifiedDiscoveryAdbClient
       endpoint: AdbEndpoint(host: '192.0.2.30', port: 37123),
     ),
   ];
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class FakeVideoConnector implements ScrcpyVideoConnector {
   final connectionCompleter = Completer<ScrcpyVideoConnection>();
   var calls = 0;
+  ScrcpySessionConfiguration? lastConfiguration;
 
   @override
   Future<ScrcpyVideoConnection> connect(
@@ -134,6 +150,7 @@ class FakeVideoConnector implements ScrcpyVideoConnector {
     AdbCancellationToken? cancellationToken,
   }) {
     calls++;
+    lastConfiguration = configuration;
     return connectionCompleter.future;
   }
 }
@@ -214,6 +231,21 @@ class FakeSessionVideoConnection implements ScrcpyVideoConnection {
 }
 
 void main() {
+  test('parses localized application labels from scrcpy output', () {
+    final labels = ScrcpyClient.parseScrcpyApplicationLabels('''
+[server] INFO: List of apps:
+ * 设置                             com.android.settings
+ * App with spaces                 com.example.spaces
+ - 媒花易数                           com.palsmon.app
+malformed line
+''');
+
+    expect(labels['com.android.settings'], '设置');
+    expect(labels['com.example.spaces'], 'App with spaces');
+    expect(labels['com.palsmon.app'], '媒花易数');
+    expect(labels, hasLength(3));
+  });
+
   test('video options validate quality and encoder selections', () {
     const valid = ScrcpyVideoOptions(
       maxSize: 1280,
@@ -238,19 +270,6 @@ void main() {
       throwsArgumentError,
     );
   });
-
-  test(
-    'ScrcpyClient discovers devices through the injected ADB boundary',
-    () async {
-      final adb = FakeAdbClient();
-      final client = ScrcpyClient(adbClient: adb);
-
-      final devices = await client.discoverDevices();
-
-      expect(adb.calls, 1);
-      expect(devices.single.serial, 'test-device');
-    },
-  );
 
   test('ScrcpySession prepares through a fake ADB device service', () async {
     final adb = FakeAdbClient();
@@ -309,69 +328,6 @@ void main() {
     );
   });
 
-  test('ScrcpyClient forwards network connect, disconnect and pair', () async {
-    final adb = FakeConnectionAdbClient();
-    final client = ScrcpyClient(adbClient: adb);
-    const endpoint = AdbEndpoint(host: '192.0.2.10', port: 5555);
-
-    await client.connect(endpoint);
-    await client.disconnect(endpoint);
-    await client.pair(endpoint, '123456');
-
-    expect(adb.connected, same(endpoint));
-    expect(adb.disconnected, same(endpoint));
-    expect(adb.paired, same(endpoint));
-    expect(adb.receivedPairingCode, '123456');
-  });
-
-  test('ScrcpyClient merges connected and paired mDNS devices', () async {
-    final devices = await ScrcpyClient(
-      adbClient: FakeUnifiedDiscoveryAdbClient(),
-    ).discoverDevices();
-
-    expect(devices, hasLength(2));
-    expect(devices.first.state, AdbDeviceState.device);
-    expect(devices.last.state, AdbDeviceState.paired);
-    expect(devices.last.serial, '192.0.2.20:42002');
-    expect(devices.last.isReady, isFalse);
-    expect(devices.last.lastSeenAt, isNotNull);
-    expect(
-      devices.where((device) => device.serial == '192.0.2.20:41001'),
-      isEmpty,
-    );
-  });
-
-  test(
-    'ScrcpySession coalesces concurrent start and stop operations',
-    () async {
-      final connector = FakeVideoConnector();
-      final connection = FakeSessionVideoConnection();
-      final session = ScrcpySession(
-        adbDeviceService: FakeAdbClient(),
-        configuration: const ScrcpySessionConfiguration(
-          deviceSerial: 'test-device',
-        ),
-        videoConnector: connector,
-      );
-
-      final firstStart = session.start();
-      final secondStart = session.start();
-      await Future<void>.delayed(Duration.zero);
-      expect(session.state.value, ScrcpySessionState.starting);
-      connector.connectionCompleter.complete(connection);
-
-      expect(await firstStart, same(connection));
-      expect(await secondStart, same(connection));
-      expect(connector.calls, 1);
-      expect(session.state.value, ScrcpySessionState.streaming);
-
-      await Future.wait(<Future<void>>[session.stop(), session.stop()]);
-      expect(connection.closeCalls, 1);
-      expect(session.state.value, ScrcpySessionState.ready);
-      session.dispose();
-    },
-  );
-
   test('ScrcpySession reports an unexpected transport disconnect', () async {
     final connector = FakeVideoConnector();
     final connection = FakeSessionVideoConnection();
@@ -392,6 +348,32 @@ void main() {
 
     expect(session.state.value, ScrcpySessionState.disconnected);
     expect(connection.closeCalls, 1);
+    session.dispose();
+  });
+
+  test('ScrcpySession forwards its display source to the connector', () async {
+    final connector = FakeVideoConnector();
+    final connection = FakeSessionVideoConnection();
+    const source = ScrcpyDisplaySource.existing(
+      3,
+      imePolicy: ScrcpyDisplayImePolicy.fallbackDisplay,
+    );
+    final session = ScrcpySession(
+      adbDeviceService: FakeAdbClient(),
+      configuration: const ScrcpySessionConfiguration(
+        deviceSerial: 'test-device',
+        displaySource: source,
+      ),
+      videoConnector: connector,
+    );
+
+    final starting = session.start();
+    await Future<void>.delayed(Duration.zero);
+    connector.connectionCompleter.complete(connection);
+    await starting;
+
+    expect(connector.lastConfiguration?.displaySource, same(source));
+    await session.stop();
     session.dispose();
   });
 

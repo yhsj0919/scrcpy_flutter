@@ -3,7 +3,12 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+
+extension on ScrcpyClient {
+  AdbToolkit get adbToolkit => AdbToolkit(adbClient);
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -12,8 +17,9 @@ void main() {
     const serial = String.fromEnvironment('SCRCPY_DEVICE_SERIAL');
     if (serial.isEmpty) return;
 
-    final monitor = ScrcpyDeviceMonitor(
-      createDefaultScrcpyClient(),
+    final client = createDefaultScrcpyClient();
+    final monitor = AdbDeviceMonitor(
+      client.adbToolkit,
       interval: const Duration(days: 1),
     );
     try {
@@ -64,9 +70,9 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
-Future<ScrcpyDeviceSnapshot> _waitFor(
-  ScrcpyDeviceMonitor monitor,
-  bool Function(ScrcpyDeviceSnapshot snapshot) predicate,
+Future<AdbDeviceSnapshot> _waitFor(
+  AdbDeviceMonitor monitor,
+  bool Function(AdbDeviceSnapshot snapshot) predicate,
 ) async {
   for (var attempt = 0; attempt < 180; attempt++) {
     final snapshot = await monitor.refresh();

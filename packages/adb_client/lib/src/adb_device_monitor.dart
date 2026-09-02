@@ -1,11 +1,10 @@
 import 'dart:async';
 
-import 'package:adb_client/adb_client.dart';
+import 'adb_device.dart';
+import 'adb_toolkit.dart';
 
-import 'scrcpy_client.dart';
-
-final class ScrcpyDeviceSnapshot {
-  const ScrcpyDeviceSnapshot({
+final class AdbDeviceSnapshot {
+  const AdbDeviceSnapshot({
     required this.devices,
     required this.added,
     required this.removed,
@@ -24,27 +23,24 @@ final class ScrcpyDeviceSnapshot {
 ///
 /// Polling is used instead of owning a second long-running `adb track-devices`
 /// process, which keeps the monitor portable across future ADB backends.
-final class ScrcpyDeviceMonitor {
-  ScrcpyDeviceMonitor(
-    this.client, {
-    this.interval = const Duration(seconds: 2),
-  });
+final class AdbDeviceMonitor {
+  AdbDeviceMonitor(this.toolkit, {this.interval = const Duration(seconds: 2)});
 
-  final ScrcpyClient client;
+  final AdbToolkit toolkit;
   final Duration interval;
-  final StreamController<ScrcpyDeviceSnapshot> _controller =
-      StreamController<ScrcpyDeviceSnapshot>.broadcast();
+  final StreamController<AdbDeviceSnapshot> _controller =
+      StreamController<AdbDeviceSnapshot>.broadcast();
 
   Timer? _timer;
   Map<String, AdbDevice> _previous = const <String, AdbDevice>{};
-  Future<ScrcpyDeviceSnapshot>? _refreshing;
+  Future<AdbDeviceSnapshot>? _refreshing;
   bool _closed = false;
 
-  Stream<ScrcpyDeviceSnapshot> get snapshots => _controller.stream;
+  Stream<AdbDeviceSnapshot> get snapshots => _controller.stream;
 
   bool get isRunning => _timer != null;
 
-  Future<ScrcpyDeviceSnapshot> start() async {
+  Future<AdbDeviceSnapshot> start() async {
     if (_closed) throw StateError('Device monitor has been closed');
     if (interval <= Duration.zero) {
       throw ArgumentError.value(interval, 'interval', 'must be positive');
@@ -54,12 +50,12 @@ final class ScrcpyDeviceMonitor {
     return initial;
   }
 
-  Future<ScrcpyDeviceSnapshot> refresh() =>
+  Future<AdbDeviceSnapshot> refresh() =>
       _refreshing ??= _refresh().whenComplete(() => _refreshing = null);
 
-  Future<ScrcpyDeviceSnapshot> _refresh() async {
+  Future<AdbDeviceSnapshot> _refresh() async {
     if (_closed) throw StateError('Device monitor has been closed');
-    final devices = await client.discoverDevices();
+    final devices = await toolkit.discoverDevices();
     final current = <String, AdbDevice>{
       for (final device in devices) device.serial: device,
     };
@@ -78,7 +74,7 @@ final class ScrcpyDeviceMonitor {
       if (!current.containsKey(entry.key)) removed.add(entry.value);
     }
     _previous = current;
-    final snapshot = ScrcpyDeviceSnapshot(
+    final snapshot = AdbDeviceSnapshot(
       devices: List.unmodifiable(devices),
       added: List.unmodifiable(added),
       removed: List.unmodifiable(removed),

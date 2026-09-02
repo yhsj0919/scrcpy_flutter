@@ -2,6 +2,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import 'scrcpy_display_source.dart';
+
 enum ScrcpyPointerAction { down, move, up, cancel, hover, scroll }
 
 enum ScrcpyCopyKey { none, copy, cut }
@@ -32,6 +34,8 @@ final class ScrcpyPointerEvent {
     required this.normalizedX,
     required this.normalizedY,
     required this.buttons,
+    this.videoWidth,
+    this.videoHeight,
     this.scrollDeltaX = 0,
     this.scrollDeltaY = 0,
   });
@@ -41,6 +45,12 @@ final class ScrcpyPointerEvent {
   final double normalizedX;
   final double normalizedY;
   final int buttons;
+
+  /// Video dimensions used to map this event. Keeping these on the event
+  /// avoids mixing an old visible frame with a newly announced stream size
+  /// while a decoder texture is being recreated.
+  final int? videoWidth;
+  final int? videoHeight;
   final double scrollDeltaX;
   final double scrollDeltaY;
 }
@@ -89,6 +99,12 @@ abstract interface class ScrcpyInputController {
   Future<void> sendKey({required int keyCode, bool down = true});
 
   Future<void> sendText(String text);
+
+  /// Starts an application on the display owned by this scrcpy session.
+  Future<void> startApplication(ScrcpyApplicationLaunch application);
+
+  /// Resizes a virtual display. The session must use flex display mode.
+  Future<void> resizeDisplay({required int width, required int height});
 
   /// Device clipboard changes emitted by scrcpy clipboard autosync and
   /// explicit [requestClipboard] calls.
@@ -321,6 +337,8 @@ final class ScrcpyInputLayer extends StatelessWidget {
         normalizedX: normalized.dx.clamp(0, 1),
         normalizedY: normalized.dy.clamp(0, 1),
         buttons: event.buttons,
+        videoWidth: currentVideoSize?.width.round(),
+        videoHeight: currentVideoSize?.height.round(),
         scrollDeltaX: scrollDelta.dx,
         scrollDeltaY: scrollDelta.dy,
       ),

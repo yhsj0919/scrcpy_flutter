@@ -43,3 +43,4 @@ flutter test integration_test\basic_control_test.dart -d windows `
 ## 结论
 
 P3-04 验收通过。自动化证明全部控制消息可在同一真实 control socket 上连续发送并保持视频流稳定；涉及具体 Android 前台页面行为的视觉效果仍可通过 Demo 人工复核。
+

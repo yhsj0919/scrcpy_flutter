@@ -2,7 +2,12 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+
+extension on ScrcpyClient {
+  AdbToolkit get adbToolkit => AdbToolkit(adbClient);
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -11,12 +16,12 @@ void main() {
     _,
   ) async {
     final client = createDefaultScrcpyClient();
-    final device = (await client.discoverDevices())
+    final device = (await client.adbToolkit.discoverDevices())
         .where((candidate) => candidate.isReady)
         .first;
     final shell = client.adbClient as AdbShellService;
     const unavailable = 'scrcpy-flutter-missing-device';
-    final task = ScrcpyBatchTask(
+    final task = AdbBatchTask(
       targets: <String>[device.serial, unavailable],
       maxConcurrency: 2,
       itemTimeout: const Duration(seconds: 10),
@@ -38,8 +43,8 @@ void main() {
 
     final result = await task.start();
 
-    expect(result.items[device.serial]!.state, ScrcpyBatchItemState.succeeded);
-    expect(result.items[unavailable]!.state, ScrcpyBatchItemState.failed);
+    expect(result.items[device.serial]!.state, AdbBatchItemState.succeeded);
+    expect(result.items[unavailable]!.state, AdbBatchItemState.failed);
     expect(result.isComplete, isTrue);
     // ignore: avoid_print
     print(

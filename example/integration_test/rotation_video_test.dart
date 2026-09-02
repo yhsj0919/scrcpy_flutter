@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
 void main() {
@@ -15,11 +16,7 @@ void main() {
     if (serial.isEmpty) return;
 
     final client = createDefaultScrcpyClient();
-    final adbBackend = client.adbClient;
-    if (adbBackend is! AdbShellService) {
-      throw StateError('The active ADB backend does not support shell');
-    }
-    final adb = adbBackend as AdbShellService;
+    final adb = client.adbClient;
     final originalAccelerometer = await _getSetting(
       adb,
       serial,

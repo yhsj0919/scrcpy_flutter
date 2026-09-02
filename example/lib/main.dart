@@ -1,7 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+
+import 'virtual_display_workspace.dart';
+
+extension on ScrcpyClient {
+  AdbToolkit get adbToolkit => AdbToolkit(adbClient);
+}
 
 void main() => runApp(DeviceWallDemo(client: createDefaultScrcpyClient()));
 
@@ -31,8 +38,8 @@ class DeviceDiscoveryPage extends StatefulWidget {
 }
 
 class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
-  late final ScrcpyDeviceMonitor _deviceMonitor;
-  StreamSubscription<ScrcpyDeviceSnapshot>? _deviceSubscription;
+  late final AdbDeviceMonitor _deviceMonitor;
+  StreamSubscription<AdbDeviceSnapshot>? _deviceSubscription;
   List<AdbDevice> _devices = const <AdbDevice>[];
   Object? _error;
   bool _loading = false;
@@ -42,7 +49,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
   @override
   void initState() {
     super.initState();
-    _deviceMonitor = ScrcpyDeviceMonitor(widget.client);
+    _deviceMonitor = AdbDeviceMonitor(widget.client.adbToolkit);
     _deviceSubscription = _deviceMonitor.snapshots.listen(
       _applyDeviceSnapshot,
       onError: (Object error) {
@@ -63,7 +70,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
     }
   }
 
-  void _applyDeviceSnapshot(ScrcpyDeviceSnapshot snapshot) {
+  void _applyDeviceSnapshot(AdbDeviceSnapshot snapshot) {
     if (!mounted) return;
     final hadDevices = _lastUpdated != null;
     setState(() {
@@ -109,7 +116,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       _error = null;
     });
     try {
-      await widget.client.connect(endpoint);
+      await widget.client.adbToolkit.connect(endpoint);
       await _refreshAfterConnectionChange();
       if (mounted) _showMessage('已连接 ${endpoint.authority}');
     } catch (error) {
@@ -131,7 +138,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       _error = null;
     });
     try {
-      await widget.client.disconnect(endpoint);
+      await widget.client.adbToolkit.disconnect(endpoint);
       await _refreshAfterConnectionChange();
       if (mounted) _showMessage('已断开 ${endpoint.authority}');
     } catch (error) {
@@ -153,7 +160,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       _error = null;
     });
     try {
-      await widget.client.connect(endpoint);
+      await widget.client.adbToolkit.connect(endpoint);
       await _refreshAfterConnectionChange();
       if (mounted) _showMessage('已连接配对设备 ${endpoint.authority}');
     } catch (error) {
@@ -166,7 +173,8 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
   Future<void> _pair() async {
     List<AdbMdnsService> discoveredServices = const <AdbMdnsService>[];
     try {
-      discoveredServices = await widget.client.discoverMdnsServices();
+      discoveredServices = await widget.client.adbToolkit
+          .discoverMdnsServices();
     } catch (_) {
       // Manual entry remains available when mDNS is unavailable.
     }
@@ -182,9 +190,12 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       _error = null;
     });
     try {
-      await widget.client.pair(request.pairingEndpoint, request.pairingCode);
+      await widget.client.adbToolkit.pair(
+        request.pairingEndpoint,
+        request.pairingCode,
+      );
       if (request.connectionEndpoint case final endpoint?) {
-        await widget.client.connect(endpoint);
+        await widget.client.adbToolkit.connect(endpoint);
       }
       await _refreshAfterConnectionChange();
       if (mounted) {
@@ -682,11 +693,13 @@ class DeviceSessionPage extends StatefulWidget {
   const DeviceSessionPage({
     required this.client,
     required this.device,
+    this.displaySource = const ScrcpyDisplaySource.main(),
     super.key,
   });
 
   final ScrcpyClient client;
   final AdbDevice device;
+  final ScrcpyDisplaySource displaySource;
 
   @override
   State<DeviceSessionPage> createState() => _DeviceSessionPageState();
@@ -694,9 +707,9 @@ class DeviceSessionPage extends StatefulWidget {
 
 class _DeviceSessionPageState extends State<DeviceSessionPage> {
   late ScrcpySession _session;
-  ScrcpyDeviceStatusMonitor? _statusMonitor;
+  AdbDeviceStatusMonitor? _statusMonitor;
   StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
-  StreamSubscription<ScrcpyDeviceStatus>? _statusSubscription;
+  StreamSubscription<AdbDeviceStatus>? _statusSubscription;
   Object? _error;
   ScrcpyVideoController? _videoController;
   ScrcpyInputController? _inputController;
@@ -712,16 +725,23 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   ScrcpyVideoCodec _videoCodec = ScrcpyVideoCodec.h264;
   String? _videoEncoder;
   ScrcpyVideoCapabilities? _videoCapabilities;
-  ScrcpyDeviceDetails? _deviceDetails;
-  ScrcpyDeviceStatus? _deviceStatus;
+  AdbDeviceDetails? _deviceDetails;
+  AdbDeviceStatus? _deviceStatus;
   int _statusIntervalSeconds = 5;
   int _statusMonitorGeneration = 0;
   bool _loadingDeviceDetails = true;
+  int? _virtualDisplayWidth;
+  int? _virtualDisplayHeight;
   final _textInputController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    final source = widget.displaySource;
+    if (source is ScrcpyVirtualDisplaySource) {
+      _virtualDisplayWidth = source.width ?? 1280;
+      _virtualDisplayHeight = source.height ?? 960;
+    }
     _session = _createSession();
     unawaited(_restartStatusMonitor(_statusIntervalSeconds));
     _bindReconnects();
@@ -732,6 +752,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     ScrcpySessionConfiguration(
       deviceSerial: widget.device.serial,
       controlEnabled: true,
+      displaySource: widget.displaySource,
       reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
       video: ScrcpyVideoOptions(
         maxSize: _maxSize,
@@ -748,7 +769,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     await _statusSubscription?.cancel();
     await _statusMonitor?.close();
     if (!mounted || generation != _statusMonitorGeneration) return;
-    final monitor = widget.client.createDeviceStatusMonitor(
+    final monitor = widget.client.adbToolkit.status(
       widget.device.serial,
       interval: Duration(seconds: seconds),
     );
@@ -795,7 +816,9 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     setState(() => _error = null);
     try {
       await _session.prepare();
-      final details = await widget.client.getDeviceDetails(widget.device);
+      final details = await widget.client.adbToolkit.getDeviceDetails(
+        widget.device,
+      );
       if (mounted) {
         setState(() {
           _deviceDetails = details;
@@ -909,6 +932,31 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     }
   }
 
+  Future<void> _resizeVirtualDisplay(int width, int height) async {
+    final input = _inputController;
+    if (input == null) return;
+    final alignedWidth = width.clamp(2, 0xffff) & ~1;
+    final alignedHeight = height.clamp(2, 0xffff) & ~1;
+    try {
+      await input.resizeDisplay(width: alignedWidth, height: alignedHeight);
+      if (mounted) {
+        setState(() {
+          _virtualDisplayWidth = alignedWidth;
+          _virtualDisplayHeight = alignedHeight;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _swapVirtualDisplayOrientation() async {
+    final width = _virtualDisplayWidth;
+    final height = _virtualDisplayHeight;
+    if (width == null || height == null) return;
+    await _resizeVirtualDisplay(height, width);
+  }
+
   Future<void> _sendText() async {
     final input = _inputController;
     final text = _textInputController.text;
@@ -979,8 +1027,40 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: Text(widget.device.model ?? '设备详情'),
+      title: Text(
+        widget.displaySource is ScrcpyVirtualDisplaySource
+            ? '${widget.device.model ?? '设备'} · 虚拟屏'
+            : widget.device.model ?? '设备详情',
+      ),
       actions: <Widget>[
+        IconButton(
+          tooltip: '虚拟屏工作台',
+          onPressed: () => Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => VirtualDisplayWorkspacePage(
+                client: widget.client,
+                device: widget.device,
+              ),
+            ),
+          ),
+          icon: const Icon(Icons.dashboard_customize),
+        ),
+        IconButton(
+          tooltip: '应用列表',
+          onPressed: () => Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => DeviceApplicationsPage(
+                client: widget.client,
+                device: widget.device,
+                virtualDisplayInput:
+                    widget.displaySource is ScrcpyVirtualDisplaySource
+                    ? _inputController
+                    : null,
+              ),
+            ),
+          ),
+          icon: const Icon(Icons.apps),
+        ),
         IconButton(
           tooltip: '文件管理',
           onPressed: () => Navigator.of(context).push<void>(
@@ -1034,6 +1114,25 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
           if (_deviceStatus case final status?) ...<Widget>[
             const SizedBox(height: 12),
             _buildDeviceStatusCard(status),
+          ],
+          if (widget.displaySource is ScrcpyVirtualDisplaySource) ...<Widget>[
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.aspect_ratio),
+                title: Text(
+                  '虚拟屏：${_virtualDisplayWidth ?? 0}×${_virtualDisplayHeight ?? 0}',
+                ),
+                subtitle: const Text('运行中可交换宽高；应用也可能按自身方向请求旋转'),
+                trailing: FilledButton.tonalIcon(
+                  onPressed: _inputController == null
+                      ? null
+                      : _swapVirtualDisplayOrientation,
+                  icon: const Icon(Icons.screen_rotation),
+                  label: const Text('切换横竖'),
+                ),
+              ),
+            ),
           ],
           const SizedBox(height: 12),
           Wrap(
@@ -1325,8 +1424,8 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
                 title: Text('会话状态：${state.name}'),
                 subtitle: Text(
                   _videoController == null
-                      ? '视频未启动'
-                      : 'scrcpy 4.1 · Native Texture',
+                      ? '${_displaySourceLabel(widget.displaySource)} · 视频未启动'
+                      : '${_displaySourceLabel(widget.displaySource)} · scrcpy 4.1 · Native Texture',
                 ),
               ),
             ),
@@ -1441,7 +1540,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     );
   }
 
-  Widget _buildDeviceStatusCard(ScrcpyDeviceStatus status) {
+  Widget _buildDeviceStatusCard(AdbDeviceStatus status) {
     final usedMemory =
         status.memoryTotalBytes == null || status.memoryAvailableBytes == null
         ? null
@@ -1542,6 +1641,14 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     AdbConnectionType.unknown => '未知',
   };
 
+  static String _displaySourceLabel(ScrcpyDisplaySource source) =>
+      switch (source) {
+        ScrcpyMainDisplaySource() => '显示源：主屏',
+        ScrcpyExistingDisplaySource(displayId: final id) => '显示源：Display $id',
+        ScrcpyVirtualDisplaySource(launchApplication: final app) =>
+          '显示源：虚拟屏${app == null ? '' : ' · ${app.packageName}'}',
+      };
+
   static String _formatBytes(int? bytes) {
     if (bytes == null) return '未知';
     final gib = bytes / 1024 / 1024 / 1024;
@@ -1555,6 +1662,460 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     final minutes = duration.inMinutes.remainder(60);
     return '${days > 0 ? '$days 天 ' : ''}$hours 小时 $minutes 分钟';
   }
+}
+
+class DeviceApplicationsPage extends StatefulWidget {
+  const DeviceApplicationsPage({
+    required this.client,
+    required this.device,
+    this.virtualDisplayInput,
+    super.key,
+  });
+
+  final ScrcpyClient client;
+  final AdbDevice device;
+  final ScrcpyInputController? virtualDisplayInput;
+
+  @override
+  State<DeviceApplicationsPage> createState() => _DeviceApplicationsPageState();
+}
+
+class _DeviceApplicationsPageState extends State<DeviceApplicationsPage> {
+  late final AdbApplicationManager _manager;
+  final _searchController = TextEditingController();
+  List<AdbApplication> _applications = const <AdbApplication>[];
+  AdbApplicationType? _type;
+  Object? _error;
+  Duration? _elapsed;
+  bool _loading = false;
+  final Set<String> _busyPackages = <String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    _manager = widget.client.adbToolkit.applications(widget.device.serial);
+    _searchController.addListener(_refreshFilter);
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _searchController
+      ..removeListener(_refreshFilter)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _refreshFilter() => setState(() {});
+
+  Future<void> _load() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final stopwatch = Stopwatch()..start();
+    try {
+      final applications = await widget.client.listApplications(
+        widget.device.serial,
+      );
+      stopwatch.stop();
+      if (!mounted) return;
+      setState(() {
+        _applications = applications;
+        _elapsed = stopwatch.elapsed;
+      });
+    } catch (error) {
+      stopwatch.stop();
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _runApplicationOperation(
+    AdbApplication application,
+    AdbApplicationOperation operation, {
+    bool forceStopFirst = false,
+  }) async {
+    if (!_busyPackages.add(application.packageName)) return;
+    setState(() => _error = null);
+    try {
+      if (operation == AdbApplicationOperation.start) {
+        await _manager.startApplication(
+          application.packageName,
+          forceStopFirst: forceStopFirst,
+        );
+      } else {
+        await _manager.stopApplication(application.packageName);
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              operation == AdbApplicationOperation.start
+                  ? '已启动 ${application.name}'
+                  : '已停止 ${application.name}',
+            ),
+          ),
+        );
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) {
+        setState(() => _busyPackages.remove(application.packageName));
+      }
+    }
+  }
+
+  Future<void> _openVirtualDisplay(
+    AdbApplication application, {
+    bool forceStopFirst = false,
+  }) async {
+    final source = await showDialog<ScrcpyVirtualDisplaySource>(
+      context: context,
+      builder: (_) => _VirtualDisplayConfigurationDialog(
+        application: application,
+        forceStopFirst: forceStopFirst,
+      ),
+    );
+    if (!mounted || source == null) return;
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => DeviceSessionPage(
+          client: widget.client,
+          device: widget.device,
+          displaySource: source,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = _applications
+        .where(
+          (app) =>
+              (_type == null || app.type == _type) &&
+              app.matches(_searchController.text),
+        )
+        .toList(growable: false);
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('设备应用'),
+        actions: <Widget>[
+          IconButton(
+            tooltip: '刷新',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: Column(
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: Column(
+              children: <Widget>[
+                TextField(
+                  controller: _searchController,
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    labelText: '搜索名称或包名',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: <Widget>[
+                    ChoiceChip(
+                      label: const Text('全部'),
+                      selected: _type == null,
+                      onSelected: (_) => setState(() => _type = null),
+                    ),
+                    ChoiceChip(
+                      label: const Text('用户应用'),
+                      selected: _type == AdbApplicationType.user,
+                      onSelected: (_) =>
+                          setState(() => _type = AdbApplicationType.user),
+                    ),
+                    ChoiceChip(
+                      label: const Text('系统应用'),
+                      selected: _type == AdbApplicationType.system,
+                      onSelected: (_) =>
+                          setState(() => _type = AdbApplicationType.system),
+                    ),
+                    Text(
+                      '${visible.length}/${_applications.length}'
+                      '${_elapsed == null ? '' : ' · ${_elapsed!.inMilliseconds} ms'}',
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          if (_loading) const LinearProgressIndicator(),
+          if (_error case final error?)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                '$error',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: visible.length,
+              itemBuilder: (context, index) {
+                final app = visible[index];
+                final busy = _busyPackages.contains(app.packageName);
+                final version =
+                    app.versionName ??
+                    (app.versionCode == null ? '未知' : '${app.versionCode}');
+                return ListTile(
+                  leading: Icon(
+                    app.type == AdbApplicationType.system
+                        ? Icons.settings_applications
+                        : Icons.apps,
+                  ),
+                  title: Text(app.name),
+                  subtitle: Text(
+                    '${app.packageName}\n版本：$version · '
+                    '${app.enabled ? '已启用' : '已停用'} · '
+                    '${app.launchable ? '可启动' : '无桌面入口'}',
+                  ),
+                  isThreeLine: true,
+                  trailing: busy
+                      ? const SizedBox.square(
+                          dimension: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : PopupMenuButton<String>(
+                          tooltip: '应用操作',
+                          onSelected: (value) {
+                            switch (value) {
+                              case 'start':
+                                unawaited(
+                                  _runApplicationOperation(
+                                    app,
+                                    AdbApplicationOperation.start,
+                                  ),
+                                );
+                              case 'restart':
+                                unawaited(
+                                  _runApplicationOperation(
+                                    app,
+                                    AdbApplicationOperation.start,
+                                    forceStopFirst: true,
+                                  ),
+                                );
+                              case 'stop':
+                                unawaited(
+                                  _runApplicationOperation(
+                                    app,
+                                    AdbApplicationOperation.stop,
+                                  ),
+                                );
+                              case 'virtual':
+                                unawaited(_openVirtualDisplay(app));
+                              case 'virtual-restart':
+                                unawaited(
+                                  _openVirtualDisplay(
+                                    app,
+                                    forceStopFirst: true,
+                                  ),
+                                );
+                              case 'current-virtual':
+                                unawaited(
+                                  widget.virtualDisplayInput!.startApplication(
+                                    ScrcpyApplicationLaunch(app.packageName),
+                                  ),
+                                );
+                            }
+                          },
+                          itemBuilder: (_) => <PopupMenuEntry<String>>[
+                            PopupMenuItem<String>(
+                              value: 'start',
+                              enabled: app.enabled && app.launchable,
+                              child: const Text('在主屏启动'),
+                            ),
+                            PopupMenuItem<String>(
+                              value: 'restart',
+                              enabled: app.enabled && app.launchable,
+                              child: const Text('强停后启动'),
+                            ),
+                            PopupMenuItem<String>(
+                              value: 'virtual',
+                              enabled: app.enabled && app.launchable,
+                              child: const Text('在虚拟屏打开'),
+                            ),
+                            PopupMenuItem<String>(
+                              value: 'virtual-restart',
+                              enabled: app.enabled && app.launchable,
+                              child: const Text('强停后在虚拟屏打开'),
+                            ),
+                            if (widget.virtualDisplayInput != null)
+                              PopupMenuItem<String>(
+                                value: 'current-virtual',
+                                enabled: app.enabled && app.launchable,
+                                child: const Text('在当前虚拟屏打开'),
+                              ),
+                            const PopupMenuDivider(),
+                            const PopupMenuItem<String>(
+                              value: 'stop',
+                              child: Text('停止应用'),
+                            ),
+                          ],
+                        ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _VirtualDisplayConfigurationDialog extends StatefulWidget {
+  const _VirtualDisplayConfigurationDialog({
+    required this.application,
+    required this.forceStopFirst,
+  });
+
+  final AdbApplication application;
+  final bool forceStopFirst;
+
+  @override
+  State<_VirtualDisplayConfigurationDialog> createState() =>
+      _VirtualDisplayConfigurationDialogState();
+}
+
+class _VirtualDisplayConfigurationDialogState
+    extends State<_VirtualDisplayConfigurationDialog> {
+  final _width = TextEditingController(text: '1280');
+  final _height = TextEditingController(text: '720');
+  final _dpi = TextEditingController(text: '240');
+  bool _systemDecorations = false;
+  bool _keepActive = true;
+  bool _moveContentToMain = false;
+  Object? _error;
+
+  @override
+  void dispose() {
+    _width.dispose();
+    _height.dispose();
+    _dpi.dispose();
+    super.dispose();
+  }
+
+  void _swapOrientation() {
+    final width = _width.text;
+    setState(() {
+      _width.text = _height.text;
+      _height.text = width;
+    });
+  }
+
+  void _submit() {
+    try {
+      final source = ScrcpyVirtualDisplaySource(
+        width: int.parse(_width.text),
+        height: int.parse(_height.text),
+        dpi: int.parse(_dpi.text),
+        systemDecorations: _systemDecorations,
+        closePolicy: _moveContentToMain
+            ? ScrcpyVirtualDisplayClosePolicy.moveContentToMainDisplay
+            : ScrcpyVirtualDisplayClosePolicy.destroyContent,
+        keepActive: _keepActive,
+        flexDisplay: true,
+        launchApplication: ScrcpyApplicationLaunch(
+          widget.application.packageName,
+          forceStopBeforeStart: widget.forceStopFirst,
+        ),
+      );
+      source.validate();
+      Navigator.of(context).pop(source);
+    } catch (error) {
+      setState(() => _error = error);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text('创建虚拟屏 · ${widget.application.name}'),
+    content: SizedBox(
+      width: 420,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextField(
+                    controller: _width,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '宽度'),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '交换横竖屏',
+                  onPressed: _swapOrientation,
+                  icon: const Icon(Icons.screen_rotation),
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: _height,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '高度'),
+                  ),
+                ),
+              ],
+            ),
+            TextField(
+              controller: _dpi,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'DPI'),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('显示系统装饰'),
+              value: _systemDecorations,
+              onChanged: (value) => setState(() => _systemDecorations = value),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('保持虚拟屏活跃'),
+              value: _keepActive,
+              onChanged: (value) => setState(() => _keepActive = value),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('关闭后将内容移回主屏'),
+              value: _moveContentToMain,
+              onChanged: (value) => setState(() => _moveContentToMain = value),
+            ),
+            if (_error case final error?)
+              Text(
+                '$error',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+          ],
+        ),
+      ),
+    ),
+    actions: <Widget>[
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _submit, child: const Text('创建并打开')),
+    ],
+  );
 }
 
 class DeviceFileManagerPage extends StatefulWidget {
@@ -1572,9 +2133,9 @@ class DeviceFileManagerPage extends StatefulWidget {
 }
 
 class _DeviceFileManagerPageState extends State<DeviceFileManagerPage> {
-  late final ScrcpyFileManager _manager;
+  late final AdbFileManager _manager;
   var _path = '/sdcard';
-  var _entries = const <ScrcpyFileEntry>[];
+  var _entries = const <AdbFileEntry>[];
   Object? _error;
   bool _busy = false;
   AdbCancellationToken? _operationCancellation;
@@ -1582,7 +2143,7 @@ class _DeviceFileManagerPageState extends State<DeviceFileManagerPage> {
   @override
   void initState() {
     super.initState();
-    _manager = widget.client.createFileManager(widget.device.serial);
+    _manager = widget.client.adbToolkit.files(widget.device.serial);
     unawaited(_load());
   }
 
@@ -1696,7 +2257,7 @@ class _DeviceFileManagerPageState extends State<DeviceFileManagerPage> {
     });
   }
 
-  Future<void> _rename(ScrcpyFileEntry entry) async {
+  Future<void> _rename(AdbFileEntry entry) async {
     final name = await _askText(
       title: '重命名',
       label: '新名称',
@@ -1724,12 +2285,12 @@ class _DeviceFileManagerPageState extends State<DeviceFileManagerPage> {
     });
   }
 
-  Future<void> _delete(ScrcpyFileEntry entry) async {
+  Future<void> _delete(AdbFileEntry entry) async {
     if (!await _confirm('确认删除？', entry.path)) return;
     await _run((token) async {
       await _manager.delete(
         entry.path,
-        recursive: entry.type == ScrcpyFileType.directory,
+        recursive: entry.type == AdbFileType.directory,
         cancellationToken: token,
       );
       final entries = await _manager.listDirectory(
@@ -1770,7 +2331,7 @@ class _DeviceFileManagerPageState extends State<DeviceFileManagerPage> {
     });
   }
 
-  Future<void> _download(ScrcpyFileEntry entry) async {
+  Future<void> _download(AdbFileEntry entry) async {
     final local = await _askText(
       title: '下载文件',
       label: 'Windows 本地目标路径',
@@ -1843,7 +2404,7 @@ class _DeviceFileManagerPageState extends State<DeviceFileManagerPage> {
             itemCount: _entries.length,
             itemBuilder: (context, index) {
               final entry = _entries[index];
-              final directory = entry.type == ScrcpyFileType.directory;
+              final directory = entry.type == AdbFileType.directory;
               return ListTile(
                 leading: Icon(directory ? Icons.folder : Icons.description),
                 title: Text(entry.name),
@@ -1896,9 +2457,9 @@ class _BatchPackagePageState extends State<BatchPackagePage> {
   final _apkController = TextEditingController();
   final _packageController = TextEditingController();
   final _selected = <String>{};
-  StreamSubscription<ScrcpyBatchSnapshot>? _subscription;
-  ScrcpyBatchTask? _task;
-  ScrcpyBatchSnapshot? _snapshot;
+  StreamSubscription<AdbBatchSnapshot>? _subscription;
+  AdbBatchTask? _task;
+  AdbBatchSnapshot? _snapshot;
   Object? _error;
   int _maxConcurrency = 3;
   bool _replaceExisting = false;
@@ -1952,7 +2513,7 @@ class _BatchPackagePageState extends State<BatchPackagePage> {
     )) {
       return;
     }
-    final manager = widget.client.createBatchPackageManager();
+    final manager = widget.client.adbToolkit.batchPackages;
     await _startTask(
       manager.installTask(
         deviceSerials: _selected.toList(),
@@ -1978,7 +2539,7 @@ class _BatchPackagePageState extends State<BatchPackagePage> {
       return;
     }
     try {
-      final manager = widget.client.createBatchPackageManager();
+      final manager = widget.client.adbToolkit.batchPackages;
       await _startTask(
         manager.uninstallTask(
           deviceSerials: _selected.toList(),
@@ -1993,7 +2554,7 @@ class _BatchPackagePageState extends State<BatchPackagePage> {
     }
   }
 
-  Future<void> _startTask(ScrcpyBatchTask task) async {
+  Future<void> _startTask(AdbBatchTask task) async {
     await _subscription?.cancel();
     setState(() {
       _task = task;
@@ -2141,8 +2702,8 @@ class _BatchPackagePageState extends State<BatchPackagePage> {
                 : _snapshot!.items.values
                           .where(
                             (item) =>
-                                item.state != ScrcpyBatchItemState.queued &&
-                                item.state != ScrcpyBatchItemState.running,
+                                item.state != AdbBatchItemState.queued &&
+                                item.state != AdbBatchItemState.running,
                           )
                           .length /
                       _snapshot!.items.length,
@@ -2179,22 +2740,21 @@ class _BatchPackagePageState extends State<BatchPackagePage> {
     ),
   );
 
-  static String _batchStateLabel(ScrcpyBatchItemState state) => switch (state) {
-    ScrcpyBatchItemState.queued => '等待中',
-    ScrcpyBatchItemState.running => '执行中',
-    ScrcpyBatchItemState.succeeded => '成功',
-    ScrcpyBatchItemState.failed => '失败',
-    ScrcpyBatchItemState.cancelled => '已取消',
-    ScrcpyBatchItemState.timedOut => '超时',
+  static String _batchStateLabel(AdbBatchItemState state) => switch (state) {
+    AdbBatchItemState.queued => '等待中',
+    AdbBatchItemState.running => '执行中',
+    AdbBatchItemState.succeeded => '成功',
+    AdbBatchItemState.failed => '失败',
+    AdbBatchItemState.cancelled => '已取消',
+    AdbBatchItemState.timedOut => '超时',
   };
 
-  static IconData _batchStateIcon(ScrcpyBatchItemState state) =>
-      switch (state) {
-        ScrcpyBatchItemState.queued => Icons.schedule,
-        ScrcpyBatchItemState.running => Icons.sync,
-        ScrcpyBatchItemState.succeeded => Icons.check_circle,
-        ScrcpyBatchItemState.failed => Icons.error,
-        ScrcpyBatchItemState.cancelled => Icons.cancel,
-        ScrcpyBatchItemState.timedOut => Icons.timer_off,
-      };
+  static IconData _batchStateIcon(AdbBatchItemState state) => switch (state) {
+    AdbBatchItemState.queued => Icons.schedule,
+    AdbBatchItemState.running => Icons.sync,
+    AdbBatchItemState.succeeded => Icons.check_circle,
+    AdbBatchItemState.failed => Icons.error,
+    AdbBatchItemState.cancelled => Icons.cancel,
+    AdbBatchItemState.timedOut => Icons.timer_off,
+  };
 }

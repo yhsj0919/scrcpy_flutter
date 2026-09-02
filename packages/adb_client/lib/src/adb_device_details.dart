@@ -1,9 +1,9 @@
 import 'dart:convert';
 
-import 'package:adb_client/adb_client.dart';
+import 'adb_device.dart';
 
-final class ScrcpyDeviceDetails {
-  const ScrcpyDeviceDetails({
+final class AdbDeviceDetails {
+  const AdbDeviceDetails({
     required this.serial,
     required this.connectionType,
     required this.observedAt,
@@ -46,8 +46,8 @@ final class ScrcpyDeviceDetails {
   final Map<String, String> unavailable;
 }
 
-final class ScrcpyDeviceDetailsParser {
-  const ScrcpyDeviceDetailsParser._();
+final class AdbDeviceDetailsParser {
+  const AdbDeviceDetailsParser._();
 
   static Map<String, String> properties(String output) {
     final result = <String, String>{};

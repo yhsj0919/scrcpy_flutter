@@ -1,19 +1,24 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+
+extension on ScrcpyClient {
+  AdbToolkit get adbToolkit => AdbToolkit(adbClient);
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('reads basic details from a connected USB device', (_) async {
     final client = createDefaultScrcpyClient();
-    final devices = await client.discoverDevices();
+    final devices = await client.adbToolkit.discoverDevices();
     final device = devices.where((candidate) {
       return candidate.isReady &&
           candidate.connectionType == AdbConnectionType.usb;
     }).first;
 
-    final details = await client.getDeviceDetails(device);
+    final details = await client.adbToolkit.getDeviceDetails(device);
 
     expect(details.model, isNotEmpty);
     expect(details.androidVersion, isNotEmpty);

@@ -4,7 +4,7 @@
 
 ## 已实现
 
-- `ScrcpyDeviceMonitor` 通过插件公开 API 周期发现设备
+- `AdbDeviceMonitor` 通过插件公开 API 周期发现设备
 - 输出完整设备列表及 `added`、`removed`、`changed` 差异
 - USB、网络、paired、offline、unauthorized 状态沿用 typed ADB 模型
 - 防止重叠刷新，支持手动刷新、停止和关闭
@@ -48,3 +48,4 @@ offline 与 unauthorized 使用确定性设备快照测试验证，物理 USB �
 ## 结论
 
 P4-01 验收通过。
+

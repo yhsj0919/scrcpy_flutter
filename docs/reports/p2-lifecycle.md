@@ -51,3 +51,4 @@ flutter test integration_test/native_video_test.dart -d windows `
 - `test/scrcpy_flutter_test.dart`：使用可计数假连接验证 50 次启停，每个连接恰好关闭一次。
 - `test/native_scrcpy_video_test.dart`：验证 Texture 清理失败时仍继续关闭 Connection。
 - `example/integration_test/native_video_test.dart`：Windows + Android 真机完整链路验收。
+

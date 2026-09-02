@@ -1,16 +1,21 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+
+extension on ScrcpyClient {
+  AdbToolkit get adbToolkit => AdbToolkit(adbClient);
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('samples current device runtime status', (_) async {
     final client = createDefaultScrcpyClient();
-    final device = (await client.discoverDevices())
+    final device = (await client.adbToolkit.discoverDevices())
         .where((candidate) => candidate.isReady)
         .first;
-    final monitor = client.createDeviceStatusMonitor(device.serial);
+    final monitor = client.adbToolkit.status(device.serial);
     try {
       await monitor.start();
       await Future<void>.delayed(const Duration(milliseconds: 300));

@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 
 import 'scrcpy_error.dart';
 import 'scrcpy_control_message.dart';
+import 'scrcpy_display_source.dart';
 import 'scrcpy_input.dart';
 import 'scrcpy_session.dart';
 import 'scrcpy_video_connection.dart';
@@ -60,7 +61,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
     ScrcpySessionConfiguration configuration, {
     AdbCancellationToken? cancellationToken,
   }) async {
-    configuration.video.validate();
+    configuration.validate();
     await (_resourceValidation ??= validateScrcpyServerResource(
       _serverPath,
       expectedSha256: _expectedServerSha256,
@@ -129,6 +130,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         'max_fps=${video.maxFps}',
         'video_bit_rate=${video.bitRate}',
         if (video.encoder case final encoder?) 'video_encoder=$encoder',
+        ...configuration.displaySource.toServerArguments(),
       ];
       serverProcess = await _adb.start(
         AdbCommand(
@@ -159,7 +161,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         controlEnabled: configuration.controlEnabled,
         cancellationToken: cancellationToken,
       );
-      return _IoScrcpyVideoConnection(
+      final connection = _IoScrcpyVideoConnection(
         _adb,
         configuration.deviceSerial,
         sockets.video,
@@ -172,6 +174,14 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
           remoteServerPath: remotePath,
         ),
       );
+      final source = configuration.displaySource;
+      if (source is ScrcpyVirtualDisplaySource) {
+        final application = source.launchApplication;
+        if (application != null) {
+          await connection.input!.startApplication(application);
+        }
+      }
+      return connection;
     } catch (_) {
       serverProcess?.kill();
       if (local != null) {
@@ -404,8 +414,10 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    if (_input != null) {
+      await _ignoreFailure(_input.close().timeout(const Duration(seconds: 2)));
+    }
     await _ignoreFailure(_socket.close().timeout(const Duration(seconds: 2)));
-    if (_input != null) await _ignoreFailure(_input.close());
     _serverProcess.kill();
     await _ignoreFailure(
       _serverProcess.exitCode.timeout(
@@ -446,6 +458,9 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
   int _nextClipboardSequence = 1;
   int _width = 0;
   int _height = 0;
+  bool _closed = false;
+  bool _disposed = false;
+  final Map<int, (int, int)> _activePointerSizes = <int, (int, int)>{};
 
   void updateVideoSize(int width, int height) {
     _width = width;
@@ -453,9 +468,25 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
   }
 
   Future<void> _send(List<int> bytes) {
+    if (_closed) return Future<void>.value();
     _writes = _writes.then((_) async {
-      _socket.add(bytes);
-      await _socket.flush();
+      if (_closed) return;
+      try {
+        _socket.add(bytes);
+        await _socket.flush();
+      } on StateError catch (error) {
+        // dart:io reports a closed socket as a StateError. The connection
+        // lifecycle reports the disconnect; late UI input is safe to drop.
+        if (error.message.toString().contains('closed')) {
+          _closed = true;
+          _activePointerSizes.clear();
+          return;
+        }
+        rethrow;
+      } on SocketException {
+        _closed = true;
+        _activePointerSizes.clear();
+      }
     });
     return _writes;
   }
@@ -466,16 +497,34 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
 
   @override
   Future<void> sendPointer(ScrcpyPointerEvent event) {
-    if (_width <= 0 || _height <= 0) {
+    final eventWidth = event.videoWidth;
+    final eventHeight = event.videoHeight;
+    var width = eventWidth != null && eventWidth > 0 ? eventWidth : _width;
+    var height = eventHeight != null && eventHeight > 0 ? eventHeight : _height;
+    final activeSize = _activePointerSizes[event.pointerId];
+    if (activeSize != null &&
+        (event.action == ScrcpyPointerAction.move ||
+            event.action == ScrcpyPointerAction.up ||
+            event.action == ScrcpyPointerAction.cancel)) {
+      width = activeSize.$1;
+      height = activeSize.$2;
+    }
+    if (width <= 0 || height <= 0) {
       return Future<void>.error(StateError('Video size is not available'));
+    }
+    if (event.action == ScrcpyPointerAction.down) {
+      _activePointerSizes[event.pointerId] = (width, height);
+    } else if (event.action == ScrcpyPointerAction.up ||
+        event.action == ScrcpyPointerAction.cancel) {
+      _activePointerSizes.remove(event.pointerId);
     }
     if (event.action == ScrcpyPointerAction.scroll) {
       return _send(
         ScrcpyControlMessageSerializer.scroll(
           normalizedX: event.normalizedX,
           normalizedY: event.normalizedY,
-          videoWidth: _width,
-          videoHeight: _height,
+          videoWidth: width,
+          videoHeight: height,
           horizontal: -event.scrollDeltaX / 20,
           vertical: -event.scrollDeltaY / 20,
           buttons: event.buttons,
@@ -485,8 +534,8 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
     return _send(
       ScrcpyControlMessageSerializer.pointer(
         event,
-        videoWidth: _width,
-        videoHeight: _height,
+        videoWidth: width,
+        videoHeight: height,
       ),
     );
   }
@@ -494,6 +543,23 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
   @override
   Future<void> sendText(String text) =>
       _send(ScrcpyControlMessageSerializer.text(text));
+
+  @override
+  Future<void> startApplication(ScrcpyApplicationLaunch application) {
+    application.validate();
+    return _send(
+      ScrcpyControlMessageSerializer.startApplication(application.controlName),
+    );
+  }
+
+  @override
+  Future<void> resizeDisplay({required int width, required int height}) =>
+      _send(
+        ScrcpyControlMessageSerializer.resizeDisplay(
+          width: width,
+          height: height,
+        ),
+      );
 
   @override
   Stream<String> get clipboardChanges => _clipboardController.stream;
@@ -539,6 +605,8 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
   }
 
   void _onDeviceDone() {
+    _closed = true;
+    _activePointerSizes.clear();
     for (final acknowledgement in _clipboardAcks.values) {
       if (!acknowledgement.isCompleted) {
         acknowledgement.completeError(
@@ -549,6 +617,10 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
   }
 
   Future<void> close() async {
+    if (_disposed) return;
+    _disposed = true;
+    _closed = true;
+    _activePointerSizes.clear();
     try {
       await _writes;
     } finally {

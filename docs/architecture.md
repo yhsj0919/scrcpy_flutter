@@ -1,14 +1,14 @@
 # 当前架构
 
-更新于 2026-09-01。
+更新于 2026-09-02。
 
 ## 目标与边界
 
 本仓库交付可嵌入其他 Flutter 应用的插件。`example/` 只负责演示、真机验证和集成测试。
 
-- Flutter 负责设备管理、布局、状态、输入覆盖层和公开 API。
-- ADB 模块负责设备发现、命令执行、文件传输及端口转发。
-- scrcpy 会话层负责 server 部署、socket 生命周期、4.1 协议拆包和控制消息。
+- `adb_client` 负责设备连接、发现、应用、文件、状态、批量任务等基础工具箱。
+- `scrcpy_flutter` 单向依赖 ADB 接口，只负责 server、Session、视频、音频、实时控制和虚拟显示。
+- Flutter Demo 组合两个包，但不把 ADB 能力包装成 scrcpy API。
 - 平台原生视频后端负责硬件解码和 Flutter Texture；编码帧不通过 MethodChannel 逐帧复制。
 
 ## 当前 Windows 数据流
@@ -32,8 +32,12 @@ Windows 原生后端按帧接收编码数据，保留配置帧、关键帧和 PT
 ## 公开组件
 
 ```text
-ScrcpyClient
-  |-- 设备发现与能力查询
+AdbToolkit
+  |-- 设备发现、连接与配对
+  |-- 应用、文件、详情与状态
+  `-- 批量 ADB 操作
+
+ScrcpyClient (依赖 AdbClient)
   `-- ScrcpySession
         |-- ScrcpyVideoConnection
         |-- ScrcpyVideoController
@@ -41,16 +45,18 @@ ScrcpyClient
         `-- ScrcpyInputController / ScrcpyInputLayer
 ```
 
-宿主只应导入 `package:scrcpy_flutter/scrcpy_flutter.dart`，不得依赖 `lib/src`、原生句柄、进程或 socket。资源路径允许高级宿主覆盖，但默认使用插件随包分发的 ADB 和 scrcpy server。
+宿主按需导入 `package:adb_client/adb_client.dart` 和 `package:scrcpy_flutter/scrcpy_flutter.dart`，不得依赖任一包的 `lib/src`。默认桌面工厂仍使用插件随包分发的 ADB 和 scrcpy server。
 
 ## ADB 模块
 
 ADB 在同一仓库拆成两个 package：
 
-- `packages/adb_client`：与后端无关的模型、接口和错误。
+- `packages/adb_client`：与后端无关的模型、接口、设备工具箱和错误。
 - `packages/adb_client_process`：桌面进程后端；Windows 默认定位插件内置 ADB。
 
 后续 Android USB Host、HarmonyOS 和 WebUSB 可新增 transport 实现，不改变 scrcpy 会话的上层 API。
+
+依赖方向固定为 `scrcpy_flutter -> adb_client <- adb_client_process`。ADB 包禁止依赖、部署或调用 scrcpy server；scrcpy 包不公开设备发现、连接、应用、文件、状态和批量操作的代理接口。
 
 ## 输入映射
 
@@ -79,3 +85,4 @@ ADB 在同一仓库拆成两个 package：
 - 升级 scrcpy 前执行协议 fixture、真机视频、控制和资源回收回归。
 - 原生后端通过内部接口隔离，不向宿主暴露 Media Foundation 类型。
 - 二进制资源必须随插件可复现地打包，并保留对应许可证和校验记录。
+

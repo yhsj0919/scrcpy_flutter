@@ -1,12 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:adb_client/adb_client.dart';
+import 'adb_client_base.dart';
+import 'adb_device_details.dart';
 
-import 'scrcpy_device_details.dart';
-
-final class ScrcpyDeviceStatus {
-  const ScrcpyDeviceStatus({
+final class AdbDeviceStatus {
+  const AdbDeviceStatus({
     required this.observedAt,
     this.cpuUsagePercent,
     this.memoryTotalBytes,
@@ -53,17 +52,17 @@ final class ScrcpyDeviceStatus {
   final Map<String, String> unavailable;
 }
 
-final class ScrcpyCpuTimes {
-  const ScrcpyCpuTimes({required this.total, required this.idle});
+final class AdbCpuTimes {
+  const AdbCpuTimes({required this.total, required this.idle});
 
   final int total;
   final int idle;
 }
 
-final class ScrcpyDeviceStatusParser {
-  const ScrcpyDeviceStatusParser._();
+final class AdbDeviceStatusParser {
+  const AdbDeviceStatusParser._();
 
-  static ScrcpyCpuTimes? cpuTimes(String output) {
+  static AdbCpuTimes? cpuTimes(String output) {
     final line = const LineSplitter()
         .convert(output)
         .where((value) => value.startsWith('cpu '))
@@ -81,10 +80,10 @@ final class ScrcpyDeviceStatusParser {
       (sum, value) => sum + value,
     );
     final idle = values[3]! + (values.length > 4 ? values[4]! : 0);
-    return ScrcpyCpuTimes(total: total, idle: idle);
+    return AdbCpuTimes(total: total, idle: idle);
   }
 
-  static double? cpuUsage(ScrcpyCpuTimes? previous, ScrcpyCpuTimes? current) {
+  static double? cpuUsage(AdbCpuTimes? previous, AdbCpuTimes? current) {
     if (previous == null || current == null) return null;
     final totalDelta = current.total - previous.total;
     final idleDelta = current.idle - previous.idle;
@@ -258,8 +257,8 @@ final class _ApplicationGpuSample {
   final int observedAtMicroseconds;
 }
 
-final class ScrcpyDeviceStatusMonitor {
-  ScrcpyDeviceStatusMonitor({
+final class AdbDeviceStatusMonitor {
+  AdbDeviceStatusMonitor({
     required AdbShellService adbShell,
     required this.serial,
     this.interval = const Duration(seconds: 5),
@@ -276,31 +275,31 @@ final class ScrcpyDeviceStatusMonitor {
   final AdbShellService _adb;
   final String serial;
   final Duration interval;
-  final _controller = StreamController<ScrcpyDeviceStatus>.broadcast();
+  final _controller = StreamController<AdbDeviceStatus>.broadcast();
   Timer? _timer;
-  ScrcpyCpuTimes? _previousCpu;
+  AdbCpuTimes? _previousCpu;
   _ApplicationCpuSample? _previousApplicationCpu;
   _ApplicationGpuSample? _previousApplicationGpu;
   ({int busy, int total})? _previousDeviceGpuBusy;
-  Future<ScrcpyDeviceStatus>? _pendingRefresh;
+  Future<AdbDeviceStatus>? _pendingRefresh;
   bool _closed = false;
 
-  Stream<ScrcpyDeviceStatus> get statuses => _controller.stream;
+  Stream<AdbDeviceStatus> get statuses => _controller.stream;
 
-  Future<ScrcpyDeviceStatus> start() async {
+  Future<AdbDeviceStatus> start() async {
     if (_closed) throw StateError('Monitor is closed');
     _timer ??= Timer.periodic(interval, (_) => unawaited(refresh()));
     return refresh();
   }
 
-  Future<ScrcpyDeviceStatus> refresh() {
+  Future<AdbDeviceStatus> refresh() {
     if (_closed) throw StateError('Monitor is closed');
     return _pendingRefresh ??= _performRefresh().whenComplete(
       () => _pendingRefresh = null,
     );
   }
 
-  Future<ScrcpyDeviceStatus> _performRefresh() async {
+  Future<AdbDeviceStatus> _performRefresh() async {
     final output = <String, String>{};
     final unavailable = <String, String>{};
     Future<void> query(String name, List<String> arguments) async {
@@ -352,24 +351,24 @@ final class ScrcpyDeviceStatusMonitor {
         '/sys/class/misc/mali0/device/utilization',
       ]),
     ]);
-    final cpu = ScrcpyDeviceStatusParser.cpuTimes(output['cpu'] ?? '');
-    final cpuUsage = ScrcpyDeviceStatusParser.cpuUsage(_previousCpu, cpu);
+    final cpu = AdbDeviceStatusParser.cpuTimes(output['cpu'] ?? '');
+    final cpuUsage = AdbDeviceStatusParser.cpuUsage(_previousCpu, cpu);
     _previousCpu = cpu ?? _previousCpu;
-    final memory = ScrcpyDeviceStatusParser.memory(output['memory'] ?? '');
-    final storage = ScrcpyDeviceDetailsParser.storage(output['storage'] ?? '');
-    final network = ScrcpyDeviceStatusParser.network(output['network'] ?? '');
-    final battery = ScrcpyDeviceDetailsParser.battery(output['battery'] ?? '');
-    var deviceGpuPercent = ScrcpyDeviceStatusParser.devfreqGpuLoad(
+    final memory = AdbDeviceStatusParser.memory(output['memory'] ?? '');
+    final storage = AdbDeviceDetailsParser.storage(output['storage'] ?? '');
+    final network = AdbDeviceStatusParser.network(output['network'] ?? '');
+    final battery = AdbDeviceDetailsParser.battery(output['battery'] ?? '');
+    var deviceGpuPercent = AdbDeviceStatusParser.devfreqGpuLoad(
       output['deviceGpuDevfreqLoad'] ?? '',
     );
     String? deviceGpuSource = deviceGpuPercent == null ? null : 'devfreq load';
-    deviceGpuPercent ??= ScrcpyDeviceStatusParser.maliGpuUtilization(
+    deviceGpuPercent ??= AdbDeviceStatusParser.maliGpuUtilization(
       output['deviceGpuMali'] ?? '',
     );
     if (deviceGpuSource == null && deviceGpuPercent != null) {
       deviceGpuSource = 'Mali utilization';
     }
-    final kgsl = ScrcpyDeviceStatusParser.gpuBusyTimes(
+    final kgsl = AdbDeviceStatusParser.gpuBusyTimes(
       output['deviceGpuKgsl'] ?? '',
     );
     final previousKgsl = _previousDeviceGpuBusy;
@@ -382,7 +381,7 @@ final class ScrcpyDeviceStatusMonitor {
       }
     }
     if (kgsl != null) _previousDeviceGpuBusy = kgsl;
-    final foreground = ScrcpyDeviceStatusParser.foregroundApplication(
+    final foreground = AdbDeviceStatusParser.foregroundApplication(
       output['foreground'] ?? '',
     );
     int? foregroundPid;
@@ -403,7 +402,7 @@ final class ScrcpyDeviceStatusMonitor {
           ]),
           query('applicationPss', <String>['dumpsys', 'meminfo', foreground]),
         ]);
-        final processTicks = ScrcpyDeviceStatusParser.processCpuTicks(
+        final processTicks = AdbDeviceStatusParser.processCpuTicks(
           output['applicationCpu'] ?? '',
         );
         final previous = _previousApplicationCpu;
@@ -424,18 +423,18 @@ final class ScrcpyDeviceStatusMonitor {
             systemTicks: cpu.total,
           );
         }
-        foregroundRssBytes = ScrcpyDeviceStatusParser.processRssBytes(
+        foregroundRssBytes = AdbDeviceStatusParser.processRssBytes(
           output['applicationRss'] ?? '',
         );
-        foregroundPssBytes = ScrcpyDeviceStatusParser.processPssBytes(
+        foregroundPssBytes = AdbDeviceStatusParser.processPssBytes(
           output['applicationPss'] ?? '',
         );
-        final uid = ScrcpyDeviceStatusParser.processUid(
+        final uid = AdbDeviceStatusParser.processUid(
           output['applicationRss'] ?? '',
         );
         final gpuWork = uid == null
             ? null
-            : ScrcpyDeviceStatusParser.gpuWorkForUid(output['gpu'] ?? '', uid);
+            : AdbDeviceStatusParser.gpuWorkForUid(output['gpu'] ?? '', uid);
         final previousGpu = _previousApplicationGpu;
         final gpuObservedAt = DateTime.now().microsecondsSinceEpoch;
         if (uid != null && gpuWork != null) {
@@ -455,7 +454,7 @@ final class ScrcpyDeviceStatusMonitor {
             observedAtMicroseconds: gpuObservedAt,
           );
         }
-        foregroundGpuMemoryBytes = ScrcpyDeviceStatusParser.gpuMemoryForPid(
+        foregroundGpuMemoryBytes = AdbDeviceStatusParser.gpuMemoryForPid(
           output['gpu'] ?? '',
           foregroundPid,
         );
@@ -464,7 +463,7 @@ final class ScrcpyDeviceStatusMonitor {
       _previousApplicationCpu = null;
       _previousApplicationGpu = null;
     }
-    final status = ScrcpyDeviceStatus(
+    final status = AdbDeviceStatus(
       observedAt: DateTime.now(),
       cpuUsagePercent: cpuUsage,
       memoryTotalBytes: memory.totalBytes,
@@ -483,7 +482,7 @@ final class ScrcpyDeviceStatusMonitor {
       foregroundApplicationGpuPercent: foregroundGpuPercent,
       foregroundApplicationGpuMemoryBytes: foregroundGpuMemoryBytes,
       deviceGpuPercent: deviceGpuPercent,
-      deviceGpuFrequencyHz: ScrcpyDeviceStatusParser.gpuFrequencyHz(
+      deviceGpuFrequencyHz: AdbDeviceStatusParser.gpuFrequencyHz(
         output['deviceGpuFrequency'] ?? '',
       ),
       deviceGpuSource: deviceGpuSource,

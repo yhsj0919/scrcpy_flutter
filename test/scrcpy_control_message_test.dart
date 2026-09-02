@@ -128,6 +128,51 @@ void main() {
     );
   });
 
+  test('serializes scrcpy 4.1 START_APP control message', () {
+    expect(
+      ScrcpyControlMessageSerializer.startApplication('+com.example.app'),
+      <int>[
+        16,
+        16,
+        0x2b,
+        0x63,
+        0x6f,
+        0x6d,
+        0x2e,
+        0x65,
+        0x78,
+        0x61,
+        0x6d,
+        0x70,
+        0x6c,
+        0x65,
+        0x2e,
+        0x61,
+        0x70,
+        0x70,
+      ],
+    );
+    expect(
+      () => ScrcpyControlMessageSerializer.startApplication(''),
+      throwsArgumentError,
+    );
+    expect(
+      () => ScrcpyControlMessageSerializer.startApplication('a' * 256),
+      throwsArgumentError,
+    );
+  });
+
+  test('serializes scrcpy 4.1 RESIZE_DISPLAY control message', () {
+    expect(
+      ScrcpyControlMessageSerializer.resizeDisplay(width: 1280, height: 720),
+      <int>[21, 0x05, 0x00, 0x02, 0xd0],
+    );
+    expect(
+      () => ScrcpyControlMessageSerializer.resizeDisplay(width: 0, height: 1),
+      throwsRangeError,
+    );
+  });
+
   test('parses fragmented and coalesced device clipboard messages', () {
     final parser = ScrcpyDeviceMessageParser();
 

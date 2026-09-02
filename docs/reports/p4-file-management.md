@@ -4,7 +4,7 @@
 
 ## 公开 API
 
-`ScrcpyClient.createFileManager(deviceSerial)` 创建 `ScrcpyFileManager`，提供：
+`AdbToolkit.files(deviceSerial)` 创建 `AdbFileManager`，提供：
 
 - `listDirectory()`：浏览目录并返回名称、路径、类型、大小和修改时间；
 - `push()` / `pull()`：设备与宿主之间传输文件；
@@ -63,3 +63,4 @@
 ## 结论
 
 P4-06 验收通过。
+

@@ -1,13 +1,13 @@
 import 'dart:async';
 
-import 'package:flutter_test/flutter_test.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:test/test.dart';
+import 'package:adb_client/adb_client.dart';
 
 void main() {
   test('limits concurrency and isolates partial failure', () async {
     var running = 0;
     var peak = 0;
-    final task = ScrcpyBatchTask(
+    final task = AdbBatchTask(
       targets: const <String>['a', 'b', 'c', 'd'],
       maxConcurrency: 2,
       operation: (target, _) async {
@@ -22,14 +22,14 @@ void main() {
     final result = await task.start();
 
     expect(peak, 2);
-    expect(result.count(ScrcpyBatchItemState.succeeded), 3);
-    expect(result.count(ScrcpyBatchItemState.failed), 1);
+    expect(result.count(AdbBatchItemState.succeeded), 3);
+    expect(result.count(AdbBatchItemState.failed), 1);
     expect(result.items['c']!.error, isA<StateError>());
   });
 
   test('retries failures and reports timeout', () async {
     final attempts = <String, int>{};
-    final task = ScrcpyBatchTask(
+    final task = AdbBatchTask(
       targets: const <String>['retry', 'timeout'],
       maxConcurrency: 1,
       maxAttempts: 2,
@@ -48,15 +48,15 @@ void main() {
 
     final result = await task.start();
 
-    expect(result.items['retry']!.state, ScrcpyBatchItemState.succeeded);
+    expect(result.items['retry']!.state, AdbBatchItemState.succeeded);
     expect(result.items['retry']!.attempts, 2);
-    expect(result.items['timeout']!.state, ScrcpyBatchItemState.timedOut);
+    expect(result.items['timeout']!.state, AdbBatchItemState.timedOut);
     expect(result.items['timeout']!.attempts, 2);
   });
 
   test('cancel stops running work and cancels queued targets', () async {
     final started = Completer<void>();
-    final task = ScrcpyBatchTask(
+    final task = AdbBatchTask(
       targets: const <String>['running', 'queued'],
       maxConcurrency: 1,
       operation: (_, token) async {
@@ -71,13 +71,13 @@ void main() {
     task.cancel();
     final result = await completion;
 
-    expect(result.items['running']!.state, ScrcpyBatchItemState.cancelled);
-    expect(result.items['queued']!.state, ScrcpyBatchItemState.cancelled);
+    expect(result.items['running']!.state, AdbBatchItemState.cancelled);
+    expect(result.items['queued']!.state, AdbBatchItemState.cancelled);
   });
 
   test('package tasks forward safe install and uninstall options', () async {
     final adb = _FakePackageService();
-    final manager = ScrcpyBatchPackageManager(adb);
+    final manager = AdbBatchPackageManager(adb);
 
     await manager
         .installTask(

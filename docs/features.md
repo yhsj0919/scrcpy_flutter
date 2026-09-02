@@ -173,3 +173,4 @@ ADB 能力作为仓库内独立模块/package 维护，与 scrcpy 视频及控�
 - 在未完成真机与发行审核验证前承诺 iOS USB ADB。
 - 在 WebUSB 不受支持的浏览器中承诺浏览器直连 USB 设备。
 - 把“鸿蒙控制 Android”宣传成“scrcpy 控制鸿蒙”，或在 USB 权限验证前承诺鸿蒙 USB 直连。
+

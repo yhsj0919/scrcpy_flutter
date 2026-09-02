@@ -13,6 +13,8 @@ final class ScrcpyControlMessageSerializer {
   static const int injectScroll = 3;
   static const int getClipboardType = 8;
   static const int setClipboardType = 9;
+  static const int startApplicationType = 16;
+  static const int resizeDisplayType = 21;
   static const int maxClipboardTextLength = (1 << 18) - 14;
 
   static Uint8List key({
@@ -67,6 +69,36 @@ final class ScrcpyControlMessageSerializer {
       ..setUint32(10, payload.length, Endian.big);
     result.setRange(14, result.length, payload);
     return result;
+  }
+
+  static Uint8List startApplication(String name) {
+    final payload = utf8.encode(name);
+    if (payload.isEmpty || payload.length > 255) {
+      throw ArgumentError.value(
+        name,
+        'name',
+        'UTF-8 application name must contain 1 to 255 bytes',
+      );
+    }
+    final result = Uint8List(2 + payload.length)
+      ..[0] = startApplicationType
+      ..[1] = payload.length;
+    result.setRange(2, result.length, payload);
+    return result;
+  }
+
+  static Uint8List resizeDisplay({required int width, required int height}) {
+    if (width <= 0 || width > 0xffff) {
+      throw RangeError.range(width, 1, 0xffff, 'width');
+    }
+    if (height <= 0 || height > 0xffff) {
+      throw RangeError.range(height, 1, 0xffff, 'height');
+    }
+    final data = ByteData(5)
+      ..setUint8(0, resizeDisplayType)
+      ..setUint16(1, width, Endian.big)
+      ..setUint16(3, height, Endian.big);
+    return data.buffer.asUint8List();
   }
 
   static Uint8List pointer(

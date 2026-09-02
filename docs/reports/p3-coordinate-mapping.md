@@ -42,3 +42,4 @@ DPI 不需要读取 Windows 物理缩放倍数：指针位置和 Widget 约束�
 ## 真机相关证据
 
 P1-04 已在 Xiaomi Android 16 上完成 20 次横竖屏切换，视频尺寸在 286×640 和 640×286 间更新；Demo 的 `ValueListenableBuilder` 每次使用控制器当前宽高重建 `ScrcpyInputLayer`，因此动态尺寸进入本报告验证过的同一纯函数路径。
+

@@ -2,7 +2,12 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+
+extension on ScrcpyClient {
+  AdbToolkit get adbToolkit => AdbToolkit(adbClient);
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -11,7 +16,7 @@ void main() {
     _,
   ) async {
     final client = createDefaultScrcpyClient();
-    final readyDevices = (await client.discoverDevices())
+    final readyDevices = (await client.adbToolkit.discoverDevices())
         .where((candidate) => candidate.isReady)
         .toList();
     final usbDevices = readyDevices
@@ -20,7 +25,7 @@ void main() {
     final device = usbDevices.isNotEmpty
         ? usbDevices.first
         : readyDevices.first;
-    final manager = client.createFileManager(device.serial);
+    final manager = client.adbToolkit.files(device.serial);
     final suffix = DateTime.now().microsecondsSinceEpoch;
     final remoteRoot = "/sdcard/Download/scrcpy 文件 $suffix '安全'";
     final remoteFile = '$remoteRoot/原始 file & data.txt';

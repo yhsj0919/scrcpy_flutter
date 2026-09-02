@@ -1,8 +1,9 @@
 # P0 公开 API 基线
 
-更新于 2026-08-31。宿主应用只导入：
+更新于 2026-09-02。宿主按使用范围导入两个独立入口：
 
 ```dart
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 ```
 
@@ -12,6 +13,7 @@ import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
 ```dart
 final client = createDefaultScrcpyClient();
+final adb = AdbToolkit(client.adbClient);
 final capabilities = client.capabilities;
 ```
 
@@ -24,20 +26,20 @@ final client = createDefaultScrcpyClient(
 );
 ```
 
-Windows 默认 Client 使用随插件分发的官方 ADB。`capabilities.video` 和 `capabilities.control` 在真实后端接入前保持 `false`，宿主应据此禁用入口。
+Windows 默认 Client 使用随插件分发的官方 ADB。`capabilities` 只描述 scrcpy 的视频和实时控制能力，不再混入设备发现、USB、网络连接或配对等 ADB 能力。
 
 ## 设备发现
 
 ```dart
-final devices = await client.discoverDevices();
+final devices = await adb.discoverDevices();
 for (final device in devices) {
   print('${device.redactedSerial}: ${device.state.name}');
 }
 ```
 
-ADB 领域能力位于独立的 `adb_client` package，通过主入口重导出。连接、配对、Wireless Debugging mDNS 发现、shell、sync、包管理和 forward 均有 typed interface，宿主不拼接 shell 字符串。
+ADB 领域能力位于独立的 `adb_client` package，`scrcpy_flutter` 不再重导出它。连接、配对、Wireless Debugging mDNS 发现、shell、sync、包管理和 forward 均有 typed interface，宿主不拼接 shell 字符串。
 
-`ScrcpyClient.discoverDevices()` 会合并 `adb devices -l` 与 mDNS connect 服务。在线设备优先；尚未在线的已配对设备使用 `AdbDeviceState.paired`，并通过 `lastSeenAt` 提供最后发现时间。pairing 广播只用于配对流程，不进入设备列表。
+`AdbToolkit.discoverDevices()` 会合并 `adb devices -l` 与 mDNS connect 服务。在线设备优先；尚未在线的已配对设备使用 `AdbDeviceState.paired`，并通过 `lastSeenAt` 提供最后发现时间。pairing 广播只用于配对流程，不进入设备列表。
 
 ## 会话
 
@@ -61,6 +63,36 @@ session.state.addListener(() {
 });
 
 session.dispose();
+```
+
+`displaySource` 默认是主屏，也可以选择已有显示或声明一个新虚拟显示：
+
+```dart
+const source = ScrcpyDisplaySource.virtual(
+  width: 1280,
+  height: 720,
+  dpi: 240,
+  systemDecorations: false,
+  closePolicy: ScrcpyVirtualDisplayClosePolicy.moveContentToMainDisplay,
+  imePolicy: ScrcpyDisplayImePolicy.local,
+  keepActive: true,
+  launchApplication: ScrcpyApplicationLaunch(
+    'com.example.app',
+    forceStopBeforeStart: true,
+  ),
+);
+```
+
+应用启动通过 scrcpy `START_APP` 控制消息完成，不会作为未知参数传给 server。Demo 的应用列表可直接创建独立虚拟屏 Session；关闭页面会停止 Session 并销毁虚拟显示，选择迁移内容策略时则由 Android 将内容移回主屏。
+
+虚拟显示启用 `flexDisplay` 后，可以在 Session 运行期间切换应用和尺寸：
+
+```dart
+final input = connection.input!;
+await input.startApplication(
+  const ScrcpyApplicationLaunch('com.example.second'),
+);
+await input.resizeDisplay(width: 1920, height: 1080);
 ```
 
 设备编码器可以在创建 session 前动态探测：
@@ -117,3 +149,4 @@ await clipboard.stop();
 - `ScrcpyLogRecord` 包含级别、来源、可选 session ID 和结构化字段。
 - 设备标识使用 `AdbDevice.redactedSerial` 写入 UI/日志。
 - 配对地址、配对码及 typed ADB 命令中的设备序列号不会进入 process 后端诊断参数。
+

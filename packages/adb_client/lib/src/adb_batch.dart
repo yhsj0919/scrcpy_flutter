@@ -2,9 +2,11 @@
 
 import 'dart:async';
 
-import 'package:adb_client/adb_client.dart';
+import 'adb_cancellation_token.dart';
+import 'adb_client_base.dart';
+import 'adb_exception.dart';
 
-enum ScrcpyBatchItemState {
+enum AdbBatchItemState {
   queued,
   running,
   succeeded,
@@ -13,8 +15,8 @@ enum ScrcpyBatchItemState {
   timedOut,
 }
 
-final class ScrcpyBatchItemResult {
-  const ScrcpyBatchItemResult({
+final class AdbBatchItemResult {
+  const AdbBatchItemResult({
     required this.target,
     required this.state,
     required this.attempts,
@@ -24,19 +26,19 @@ final class ScrcpyBatchItemResult {
   });
 
   final String target;
-  final ScrcpyBatchItemState state;
+  final AdbBatchItemState state;
   final int attempts;
   final DateTime? startedAt;
   final DateTime? finishedAt;
   final Object? error;
 
-  ScrcpyBatchItemResult copyWith({
-    ScrcpyBatchItemState? state,
+  AdbBatchItemResult copyWith({
+    AdbBatchItemState? state,
     int? attempts,
     DateTime? startedAt,
     DateTime? finishedAt,
     Object? error,
-  }) => ScrcpyBatchItemResult(
+  }) => AdbBatchItemResult(
     target: target,
     state: state ?? this.state,
     attempts: attempts ?? this.attempts,
@@ -46,33 +48,33 @@ final class ScrcpyBatchItemResult {
   );
 }
 
-final class ScrcpyBatchSnapshot {
-  const ScrcpyBatchSnapshot(this.items);
+final class AdbBatchSnapshot {
+  const AdbBatchSnapshot(this.items);
 
-  final Map<String, ScrcpyBatchItemResult> items;
+  final Map<String, AdbBatchItemResult> items;
 
-  int count(ScrcpyBatchItemState state) =>
+  int count(AdbBatchItemState state) =>
       items.values.where((item) => item.state == state).length;
 
   bool get isComplete => items.values.every(
     (item) => switch (item.state) {
-      ScrcpyBatchItemState.queued || ScrcpyBatchItemState.running => false,
+      AdbBatchItemState.queued || AdbBatchItemState.running => false,
       _ => true,
     },
   );
 }
 
-typedef ScrcpyBatchOperation = Future<void> Function(
+typedef AdbBatchOperation = Future<void> Function(
   String target,
   AdbCancellationToken cancellationToken,
 );
 
-final class ScrcpyBatchTask {
+final class AdbBatchTask {
   // A public `operation` name is required; a private initializing formal would
   // make the named argument inaccessible to package consumers.
-  ScrcpyBatchTask({
+  AdbBatchTask({
     required List<String> targets,
-    required ScrcpyBatchOperation operation,
+    required AdbBatchOperation operation,
     this.maxConcurrency = 3,
     this.itemTimeout = const Duration(minutes: 5),
     this.maxAttempts = 1,
@@ -91,33 +93,33 @@ final class ScrcpyBatchTask {
     if (maxAttempts < 1) {
       throw RangeError.range(maxAttempts, 1, null, 'maxAttempts');
     }
-    _items = <String, ScrcpyBatchItemResult>{
+    _items = <String, AdbBatchItemResult>{
       for (final target in targets)
-        target: ScrcpyBatchItemResult(
+        target: AdbBatchItemResult(
           target: target,
-          state: ScrcpyBatchItemState.queued,
+          state: AdbBatchItemState.queued,
           attempts: 0,
         ),
     };
   }
 
   final List<String> _targets;
-  final ScrcpyBatchOperation _operation;
+  final AdbBatchOperation _operation;
   final int maxConcurrency;
   final Duration itemTimeout;
   final int maxAttempts;
-  final _snapshots = StreamController<ScrcpyBatchSnapshot>.broadcast();
+  final _snapshots = StreamController<AdbBatchSnapshot>.broadcast();
   final _activeTokens = <AdbCancellationToken>{};
-  late final Map<String, ScrcpyBatchItemResult> _items;
-  Future<ScrcpyBatchSnapshot>? _running;
+  late final Map<String, AdbBatchItemResult> _items;
+  Future<AdbBatchSnapshot>? _running;
   bool _cancelled = false;
   int _nextIndex = 0;
 
-  Stream<ScrcpyBatchSnapshot> get snapshots => _snapshots.stream;
+  Stream<AdbBatchSnapshot> get snapshots => _snapshots.stream;
 
-  ScrcpyBatchSnapshot get current => _snapshot();
+  AdbBatchSnapshot get current => _snapshot();
 
-  Future<ScrcpyBatchSnapshot> start() => _running ??= _run();
+  Future<AdbBatchSnapshot> start() => _running ??= _run();
 
   void cancel() {
     if (_cancelled) return;
@@ -127,9 +129,9 @@ final class ScrcpyBatchTask {
     }
     for (final target in _targets.skip(_nextIndex)) {
       final item = _items[target]!;
-      if (item.state == ScrcpyBatchItemState.queued) {
+      if (item.state == AdbBatchItemState.queued) {
         _items[target] = item.copyWith(
-          state: ScrcpyBatchItemState.cancelled,
+          state: AdbBatchItemState.cancelled,
           finishedAt: DateTime.now(),
         );
       }
@@ -137,7 +139,7 @@ final class ScrcpyBatchTask {
     _emit();
   }
 
-  Future<ScrcpyBatchSnapshot> _run() async {
+  Future<AdbBatchSnapshot> _run() async {
     _emit();
     final workerCount = maxConcurrency.clamp(1, _targets.length);
     await Future.wait(
@@ -159,13 +161,13 @@ final class ScrcpyBatchTask {
     final startedAt = DateTime.now();
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       if (_cancelled) {
-        _finish(target, ScrcpyBatchItemState.cancelled, attempt - 1, startedAt);
+        _finish(target, AdbBatchItemState.cancelled, attempt - 1, startedAt);
         return;
       }
       final token = AdbCancellationToken();
       _activeTokens.add(token);
       _items[target] = _items[target]!.copyWith(
-        state: ScrcpyBatchItemState.running,
+        state: AdbBatchItemState.running,
         attempts: attempt,
         startedAt: startedAt,
       );
@@ -179,14 +181,14 @@ final class ScrcpyBatchTask {
           },
         );
         _activeTokens.remove(token);
-        _finish(target, ScrcpyBatchItemState.succeeded, attempt, startedAt);
+        _finish(target, AdbBatchItemState.succeeded, attempt, startedAt);
         return;
       } on _BatchTimeout catch (error) {
         _activeTokens.remove(token);
         if (attempt == maxAttempts) {
           _finish(
             target,
-            ScrcpyBatchItemState.timedOut,
+            AdbBatchItemState.timedOut,
             attempt,
             startedAt,
             error,
@@ -199,7 +201,7 @@ final class ScrcpyBatchTask {
             (error is AdbException && error.code == AdbErrorCode.cancelled)) {
           _finish(
             target,
-            ScrcpyBatchItemState.cancelled,
+            AdbBatchItemState.cancelled,
             attempt,
             startedAt,
             error,
@@ -207,13 +209,7 @@ final class ScrcpyBatchTask {
           return;
         }
         if (attempt == maxAttempts) {
-          _finish(
-            target,
-            ScrcpyBatchItemState.failed,
-            attempt,
-            startedAt,
-            error,
-          );
+          _finish(target, AdbBatchItemState.failed, attempt, startedAt, error);
           return;
         }
       }
@@ -222,7 +218,7 @@ final class ScrcpyBatchTask {
 
   void _finish(
     String target,
-    ScrcpyBatchItemState state,
+    AdbBatchItemState state,
     int attempts,
     DateTime startedAt, [
     Object? error,
@@ -237,28 +233,27 @@ final class ScrcpyBatchTask {
     _emit();
   }
 
-  ScrcpyBatchSnapshot _snapshot() => ScrcpyBatchSnapshot(
-    Map<String, ScrcpyBatchItemResult>.unmodifiable(_items),
-  );
+  AdbBatchSnapshot _snapshot() =>
+      AdbBatchSnapshot(Map<String, AdbBatchItemResult>.unmodifiable(_items));
 
   void _emit() {
     if (!_snapshots.isClosed) _snapshots.add(_snapshot());
   }
 }
 
-final class ScrcpyBatchPackageManager {
-  const ScrcpyBatchPackageManager(this._adb);
+final class AdbBatchPackageManager {
+  const AdbBatchPackageManager(this._adb);
 
   final AdbPackageService _adb;
 
-  ScrcpyBatchTask installTask({
+  AdbBatchTask installTask({
     required List<String> deviceSerials,
     required String apkPath,
     bool replaceExisting = false,
     int maxConcurrency = 3,
     Duration itemTimeout = const Duration(minutes: 5),
     int maxAttempts = 1,
-  }) => ScrcpyBatchTask(
+  }) => AdbBatchTask(
     targets: deviceSerials,
     maxConcurrency: maxConcurrency,
     itemTimeout: itemTimeout,
@@ -271,7 +266,7 @@ final class ScrcpyBatchPackageManager {
     ),
   );
 
-  ScrcpyBatchTask uninstallTask({
+  AdbBatchTask uninstallTask({
     required List<String> deviceSerials,
     required String packageName,
     bool keepData = false,
@@ -283,7 +278,7 @@ final class ScrcpyBatchPackageManager {
         .hasMatch(packageName)) {
       throw ArgumentError.value(packageName, 'packageName');
     }
-    return ScrcpyBatchTask(
+    return AdbBatchTask(
       targets: deviceSerials,
       maxConcurrency: maxConcurrency,
       itemTimeout: itemTimeout,

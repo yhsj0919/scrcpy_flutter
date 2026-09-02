@@ -47,3 +47,4 @@
 | 原生解码器/Texture | VideoController | texture ID | MethodChannel dispose | 即使 dispose 失败也继续关闭连接 |
 
 当前实现的 `close/stop/dispose` 均幂等。任一清理步骤失败不会阻断后续步骤；Session 在启动未完成时被停止或销毁，也会回收迟到的连接。
+

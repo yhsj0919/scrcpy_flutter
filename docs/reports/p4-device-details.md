@@ -4,7 +4,7 @@
 
 ## 公开 API
 
-`ScrcpyClient.getDeviceDetails(AdbDevice)` 返回不可变的 `ScrcpyDeviceDetails`。该模型包含：
+`AdbToolkit.getDeviceDetails(AdbDevice)` 返回不可变的 `AdbDeviceDetails`。该模型包含：
 
 - 品牌、制造商、型号；
 - Android 版本、SDK、主 ABI；
@@ -57,3 +57,4 @@
 ## 结论
 
 P4-05 验收通过。
+

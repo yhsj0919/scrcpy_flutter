@@ -41,3 +41,4 @@
 | `LICENSE` | `01C12035BF35AF37241298DC7AD538EB2A07E5C940437BC6876FEEAA9D1951D0` |
 
 server 升级必须同步修改协议 fixture、启动参数、资源文件名、校验值和真机回归基线。
+

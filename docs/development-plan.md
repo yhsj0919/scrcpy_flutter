@@ -1,6 +1,6 @@
 # 可执行开发计划与交接清单
 
-更新于 2026-09-01。
+更新于 2026-09-02。
 
 本文件是项目开发进度的唯一逐项事实来源。完成一项就将 `[ ]` 改成 `[x]`，并在对应条目下填写日期、提交/文件、验证结果和必要备注。不得只因“代码已经写完”而勾选，必须满足该项的完成判定。
 
@@ -16,14 +16,14 @@
 
 ## 当前交接摘要
 
-- 当前阶段：P1 视频技术验证。
-- 当前状态：P0 工程基线和 scrcpy 4.1 视频拆包已完成；Windows Media Foundation 后端已通过真机实际解码帧计数测试。
-- 下一项：用重新构建的 Demo 视觉确认实时刷新和首屏耗时，再实现积压时保留最新可解帧。
-- 当前阻塞：无协议或解码阻塞；仍需视觉验收和性能数据，不能仅凭帧计数勾选 P1-05。
-- 已选基线：Windows、scrcpy 4.1、平台原生解码、网络/USB ADB、H.264、首版无音频。
-- 首版功能闭环：USB/网络/配对码连接，查看当前画面，画质配置，scrcpy 基础控制和模拟触摸。
+- 当前阶段：P5-A 应用与显示源。
+- 当前状态：P0～P4 与 P5-00～P5-06 已完成；Demo 已提供同页新增、排列、切换应用、旋转、动态适应和关闭任意虚拟屏的工作台。P3-05 和 P4-04 长时间稳定性测试按决策延期，仍保持未勾选。
+- 下一项：P5-07 scrcpy 音频协议与传输，随后完成 Windows 音频播放与焦点，再进入设备墙。
+- 当前阻塞：无；真实批量安装/卸载仍等待专用测试 APK 做补充真机验收，不阻塞 P5。
+- 已选基线：Windows、scrcpy 4.1、平台原生解码、网络/USB ADB、H.264；P5 增加 Opus 音频与虚拟显示。
+- 当前功能闭环：USB/网络/配对码连接，实时画面，画质配置，scrcpy 基础控制、模拟触摸、剪贴板、设备管理与安全批量包操作。
 - 交付形态：从 P0 起按可嵌入 Flutter 插件实现；example 只消费插件公开 API，不承载核心逻辑。
-- 早期增强：设备详情、文件管理、运行状态，以及安装/卸载等批量 ADB 操作。
+- 已完成增强：设备详情、文件管理、设备/应用 CPU/内存/GPU 状态，以及安装/卸载等批量 ADB 操作。
 - 稳定目标：8 台设备；压力测试目标：16 台设备。
 - 后期平台：Android 宿主优先验证；HarmonyOS/OpenHarmony 仅验证“宿主控制 Android”；Web 优先 Chromium；iOS/iPadOS 只在系统与发行条件允许时继续。
 
@@ -167,7 +167,7 @@
   - 验证证据：`docs/reports/p2-wireless-pairing.md`。
   - 完成日期：2026-09-01
   - 提交/文件：`packages/adb_client/lib/src/adb_mdns_service.dart`、`packages/adb_client_process/lib/src/adb_mdns_parser.dart`、`packages/adb_client_process/lib/src/process_adb_client.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`docs/reports/p2-wireless-pairing.md`
-  - 备注：已实现 `ScrcpyClient.pair`、mDNS pairing/connect 服务发现与 Demo 验证码配对表单；选择配对服务会自动匹配同主机变化后的最新连接端口。配对码输入隐藏，ADB 诊断参数已脱敏且不持久化。自动化覆盖成功、错误码、过期、取消、IPv4/IPv6 和端口变化；2026-09-01 用户确认手工真机验证通过。
+  - 备注：已通过 `AdbToolkit.pair` 实现配对、mDNS pairing/connect 服务发现与 Demo 验证码配对表单；选择配对服务会自动匹配同主机变化后的最新连接端口。配对码输入隐藏，ADB 诊断参数已脱敏且不持久化。自动化覆盖成功、错误码、过期、取消、IPv4/IPv6 和端口变化；2026-09-01 用户确认手工真机验证通过。
 
 - [x] **P2-08 统一连接设备列表**
   - 完成判定：USB、网络、已配对/已连接设备使用统一模型，展示连接类型、状态、显示名和最后更新时间。
@@ -287,7 +287,7 @@
   - 验证证据：example Windows 构建与人工验收。
   - 完成日期：2026-09-02
   - 提交/文件：`example/lib/main.dart`、`example/test/widget_test.dart`、`docs/reports/p4-single-device-demo.md`
-  - 备注：设备列表与单设备页面仅依赖 `package:scrcpy_flutter/scrcpy_flutter.dart` 公开 API；覆盖启动/停止、Native Texture 画面、鼠标键盘/多点触摸、导航键、文本、剪贴板、画质参数、会话错误、帧统计及连接诊断。Windows Release 构建成功，并确认产物包含内置 ADB、所需 DLL 和 scrcpy-server 4.1。
+  - 备注：设备列表与单设备页面分别依赖 `adb_client` 和 `scrcpy_flutter` 的公开 API；覆盖启动/停止、Native Texture 画面、鼠标键盘/多点触摸、导航键、文本、剪贴板、画质参数、会话错误、帧统计及连接诊断。Windows Release 构建成功，并确认产物包含内置 ADB、所需 DLL 和 scrcpy-server 4.1。
 
 - [ ] **P4-04 两小时稳定性验收**
   - 完成判定：连续显示和间歇控制 2 小时，无崩溃、显著泄漏或持续延迟增长。
@@ -324,72 +324,130 @@
   - 提交/文件：`lib/src/scrcpy_batch.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`test/scrcpy_batch_test.dart`、`example/test/widget_test.dart`、`example/integration_test/batch_scheduler_test.dart`、`docs/reports/p4-batch-packages.md`
   - 备注：通用调度器支持并发限制、逐项超时、全局取消、可配置重试及逐设备快照；产品 API 只封装批量安装/卸载，不提供任意 shell 群发。Demo 具备设备多选、参数预览确认和逐项结果。只读真机故障隔离通过；因无专用测试 APK，未擅自变更真机已有应用。
 
-## P5：设备墙、批量控制与多开原型（预计 8–14 天）
+## P5：应用、多显示、音频与设备墙（预计 15–25 天）
 
-阶段完成判定：4 台设备同时稳定运行，单台失败不会中断其他会话。
+阶段策略：先稳定“一个设备上的多个独立内容 Session”，再扩展到“多个设备的设备墙”。应用、多显示、动态尺寸和音频会改变 Session 协议与生命周期，必须在响应式设备墙之前完成。
 
-- [ ] **P5-01 多 Session 管理器**
-  - 完成判定：插件公开 API 能够并发创建、查询、停止和销毁独立 Session，无共享可变单例资源冲突，同一宿主可嵌入多个视频组件。
-  - 验证证据：并发生命周期测试。
+阶段完成判定：支持从应用列表选择应用并在主屏或虚拟屏启动；同一设备可同时运行两个独立应用窗口；聚焦窗口可播放音频；4 台设备同时稳定运行且单台失败不影响其他会话。
+
+### P5-A：应用与显示源
+
+- [x] **P5-00 ADB 高层能力归位**
+  - 完成判定：设备发现/连接、应用、文件、详情、状态和批量能力只由 `adb_client` 公开；`scrcpy_flutter` 单向依赖 ADB，不保留 `Scrcpy*` 兼容接口或 ADB 代理方法。
+  - 验证证据：两个包分别测试和静态检查通过；ADB 包源码不依赖 scrcpy；应用列表与启停真机回归通过。
+  - 完成日期：2026-09-02
+  - 提交/文件：`packages/adb_client/lib/src/adb_toolkit.dart`、`packages/adb_client/lib/src/adb_application.dart`、`packages/adb_client/lib/src/adb_device_*.dart`、`packages/adb_client/lib/src/adb_file_manager.dart`、`packages/adb_client/lib/src/adb_batch.dart`、`lib/src/scrcpy_client.dart`、`docs/architecture.md`
+  - 备注：ADB 应用枚举已改用 `pm`、`dumpsys` 和 `cmd package`，不再借用 scrcpy server。本地化应用标签和图标将由未来独立 ADB helper 延迟补充，不引入反向依赖。
+
+- [x] **P5-01 设备应用清单**
+  - 完成判定：插件公开 API 能列出用户/系统应用，至少包含名称、包名、版本、启用状态和应用类型；支持搜索与刷新，单条异常不导致列表失败。
+  - 验证证据：解析测试、Android 版本兼容测试、真机应用列表和首屏耗时记录。
+  - 备注：基础 ADB 清单允许名称回退包名；scrcpy 层已增加内置 server 本地化名称增强，真机取得 587 个包、277 个用户应用、216 个可启动应用，至少一个可启动应用名称与包名不同，总耗时约 4.5 秒。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_application.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`test/scrcpy_application_test.dart`、`example/integration_test/application_list_test.dart`、`docs/reports/p5-application-list.md`
+  - 备注：应用图标为可选延迟加载项，不阻塞首版；优先使用包名作为稳定标识。修正 `/data/app` Base64 路径分隔后，真机 ZC-3588A（Android 15）读取 140 个包（3 个用户应用）、21 个桌面入口，首次耗时 957 ms。
+
+- [x] **P5-02 主屏应用启动/停止**
+  - 完成判定：从应用列表在设备当前主屏启动应用，可选启动前 force-stop；支持停止应用并显示逐项错误。
+  - 验证证据：普通 Activity、无 Launcher Activity、已运行应用和启动失败真机测试。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_application.dart`、`example/lib/main.dart`、`test/scrcpy_application_test.dart`、`example/integration_test/application_control_test.dart`、`docs/reports/p5-application-control.md`
+  - 备注：该能力不创建新视频 Session，可被单设备页和批量控制复用。真机完成计算器强停后启动、前台 Activity 确认和停止，并验证无 Launcher 包的明确失败。
+
+- [x] **P5-03 Session 显示源模型**
+  - 完成判定：Session 配置明确区分主显示、已有 displayId 和新建虚拟显示；新建显示支持尺寸、DPI、系统装饰、内容关闭策略、IME 策略和启动应用参数。
+  - 验证证据：参数序列化、非法组合、向后兼容及 fake connector 测试。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_display_source.dart`、`lib/src/scrcpy_session.dart`、`lib/src/scrcpy_video_connection_io.dart`、`test/scrcpy_display_source_test.dart`、`docs/reports/p5-display-source.md`
+  - 备注：默认主屏不生成额外参数；已有显示使用 `display_id`；新显示统一序列化 `new_display`、DPI、系统装饰、内容关闭策略、IME、keep-active 和 flex-display。启动应用保留为控制通道参数，由 P5-04 在虚拟显示建立后发送。
+
+- [x] **P5-04 单虚拟屏闭环**
+  - 完成判定：选择应用后创建虚拟屏、获得画面、完成鼠标键盘/触摸控制，并在关闭时按策略销毁内容或迁回主屏。
+  - 验证证据：`docs/reports/p5-virtual-display.md`，至少两台不同厂商/Android 版本真机。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_control_message.dart`、`lib/src/scrcpy_input.dart`、`lib/src/scrcpy_video_connection_io.dart`、`example/lib/main.dart`、`example/integration_test/virtual_display_test.dart`、`docs/reports/p5-virtual-display.md`
+  - 备注：ZC-3568K（Android 11）与 Xiaomi 23127PN0CC（Android 16）均通过。两台设备都成功创建 1280×720/240 虚拟屏、通过 START_APP 启动计算器、Native Texture 出帧、发送触摸并完成停止清理；小米应用请求竖屏后视频与 Texture 正常切换为 720×1280。
+
+- [x] **P5-05 同设备多应用窗口**
+  - 完成判定：同一设备可同时运行“主屏 + 应用 1 虚拟屏 + 应用 2 虚拟屏”中的至少两个窗口；每个窗口拥有独立 SCID、Texture、控制通道、displayId、画质和生命周期。
+  - 验证证据：双虚拟屏并发测试、独立输入测试和关闭其中一个不影响另一个的异常测试。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_control_message.dart`、`lib/src/scrcpy_input.dart`、`example/lib/virtual_display_workspace.dart`、`example/integration_test/multi_virtual_display_test.dart`、`docs/reports/p5-multi-virtual-display.md`
+  - 备注：Demo 工作台可在同页新增、排列、聚焦、切换应用、旋转和关闭多块虚拟屏。Xiaomi Android 16 真机同时运行横屏计算器和竖屏设置，SCID/forward/Texture/控制通道互不共享；关闭计算器后设置继续出帧，最终无新增 forward 残留。根据当前“不先考虑设备性能”的决定暂不设置人为 Session 上限。
+
+- [x] **P5-06 虚拟屏动态尺寸与应用自适应**
+  - 完成判定：Flutter 窗口变化经防抖后调整虚拟屏尺寸/DPI；支持最小/最大分辨率、偶数尺寸对齐和变化阈值，应用内容跟随重排且控制坐标准确。
+  - 验证证据：连续缩放 Widget/协议测试、横竖屏与三种宽高比真机测试。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_adaptive_display.dart`、`lib/src/scrcpy_control_message.dart`、`lib/src/scrcpy_input.dart`、`example/lib/virtual_display_workspace.dart`、`test/scrcpy_adaptive_display_test.dart`、`example/integration_test/multi_virtual_display_test.dart`、`docs/reports/p5-adaptive-display.md`
+  - 备注：已实现预览框防抖跟随、最大/最小尺寸、偶数对齐、变化阈值、自动适应开关和手工比例/横竖切换。Xiaomi Android 16 已通过 1:1、16:9、9:16、3:1 连续 resize 且另一 Session 持续出帧；Rockchip Android 11 补充通过逐比例中心触摸及双 Session 并发测试，另一屏帧数由 2 增至 19，测试结束无新增 forward 残留。
+
+### P5-B：音频
+
+- [ ] **P5-07 scrcpy 音频协议与传输**
+  - 完成判定：Session 独立管理 video/audio/control 通道；解析音频 codec/config/packet，支持音频可选、失败降级和 require-audio 语义，不影响现有纯视频调用方。
+  - 验证证据：协议分包、断流、音频不可用、Android 10/11/12+ 行为测试和真机原始包记录。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：首版优先 Opus；Android 11 启动条件及应用禁止 playback capture 必须明确提示。
 
-- [ ] **P5-02 响应式设备网格**
-  - 完成判定：设备格子保持比例，窗口缩放不卡顿，支持聚焦/返回设备墙。
-  - 验证证据：不同窗口尺寸的 Widget/人工测试。
+- [ ] **P5-08 Windows 音频解码、播放与焦点**
+  - 完成判定：Windows 低延迟播放设备音频，支持静音、音量、缓冲和延迟统计；多个窗口同时存在时默认只播放聚焦窗口，切换无明显爆音或资源泄漏。
+  - 验证证据：音画延迟、焦点切换、静音、断线重连和 30 分钟真机测试。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：音频通常是设备级 playback capture，不承诺按虚拟屏或单应用隔离；设备墙默认每台设备最多一个音频焦点。
 
-- [ ] **P5-03 会话故障隔离**
-  - 完成判定：任意一台拔出、server 崩溃或解码失败不影响其他 Player 和控制连接。
-  - 验证证据：四设备异常注入测试。
+### P5-C：多 Session 与设备墙
+
+- [ ] **P5-09 多 Session 管理器**
+  - 完成判定：插件公开 API 能并发创建、查询、聚焦、停止和销毁独立 Session；支持“设备 → display/session”层级，无共享可变单例冲突，同一宿主可嵌入多个视频组件。
+  - 验证证据：并发生命周期、同设备多 Session、跨设备 Session 和资源上限测试。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：统一管理视频、音频、输入、剪贴板和重连归属。
 
-- [ ] **P5-04 四设备稳定性验收**
-  - 完成判定：4 台设备同时运行 1 小时，支持逐台控制和聚焦切换。
-  - 验证证据：`docs/reports/p5-device-wall.md`。
+- [ ] **P5-10 响应式设备/应用网格**
+  - 完成判定：网格同时容纳设备主屏和虚拟应用窗口，格子保持比例，窗口缩放不卡顿，支持聚焦、全屏和返回设备墙。
+  - 验证证据：不同窗口尺寸、1/2/4/8 格 Widget 测试及人工验收。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：键盘、剪贴板和音频只归属明确聚焦的格子。
 
-- [ ] **P5-05 安全的批量 ADB 操作框架**
-  - 完成判定：统一实现目标选择、参数预览、并发限制、超时、取消、重试和逐设备结果，安装/卸载基于该框架运行。
-  - 验证证据：调度器单元测试及混合成功/失败集成测试。
+- [ ] **P5-11 会话故障隔离与虚拟屏清理**
+  - 完成判定：任一设备拔出、server/编码器崩溃、音频失败或虚拟屏关闭不影响其他窗口；异常退出后不残留可清理的 display/server/forward。
+  - 验证证据：跨设备及同设备多 Session 异常注入测试。
   - 完成日期：
   - 提交/文件：
-  - 备注：破坏性操作必须额外确认。
+  - 备注：同设备共享硬件资源失败时必须准确标记受影响 Session。
 
-- [ ] **P5-06 批量基础控制**
-  - 完成判定：支持在明确选中的设备上批量发送安全导航键、启动/停止应用；具有暂停和紧急停止。
+- [ ] **P5-12 可见性、聚焦与画质调度**
+  - 完成判定：聚焦、普通可见和离屏三种状态具有明确的分辨率/FPS/音频策略；动态切换不会重复启动 Session 或泄漏资源。
+  - 验证证据：切换前后 CPU/GPU/内存、码率、延迟和 Session 数量对比。
+  - 完成日期：
+  - 提交/文件：
+  - 备注：与 P6 的硬解和规模压测衔接；首版允许通过重启 Session 应用画质策略。
+
+- [ ] **P5-13 批量基础控制**
+  - 完成判定：复用 P4-08 调度器，在明确选中的设备上批量发送安全导航键、启动/停止应用；具有暂停/取消和紧急停止。
   - 验证证据：四设备执行结果和单设备脱离测试。
   - 完成日期：
   - 提交/文件：
-  - 备注：首版不广播密码、剪贴板和任意文本。
+  - 备注：首版不广播密码、剪贴板和任意文本；P4-08 已完成调度、确认和逐项结果底座。
 
-- [ ] **P5-07 归一化触摸广播验证**
-  - 完成判定：在分辨率和宽高比不同的设备间映射触摸，检测并提示不兼容设备；默认关闭。
-  - 验证证据：至少三种宽高比的坐标与真机测试。
+- [ ] **P5-14 归一化触摸广播验证**
+  - 完成判定：在分辨率和宽高比不同的主屏/虚拟屏之间映射触摸，检测并提示不兼容目标；默认关闭并提供紧急停止。
+  - 验证证据：至少三种宽高比、主屏与虚拟屏混合坐标测试。
   - 完成日期：
   - 提交/文件：
-  - 备注：属于高风险交互功能，必须提供紧急停止。
+  - 备注：属于高风险交互功能，不广播键盘密码、剪贴板或任意文本。
 
-- [ ] **P5-08 应用多开/虚拟显示技术验证**
-  - 完成判定：使用 scrcpy new/virtual display 启动指定应用，独立维护画面、控制坐标和生命周期，并记录兼容设备矩阵。
-  - 验证证据：`docs/reports/p5-virtual-display.md`。
+- [ ] **P5-15 四设备稳定性验收**
+  - 完成判定：4 台设备同时运行 1 小时，支持逐台/逐应用窗口控制、聚焦切换和单音频焦点；单个 Session 故障不扩散。
+  - 验证证据：`docs/reports/p5-device-wall.md`。
   - 完成日期：
   - 提交/文件：
-  - 备注：S2，不阻塞基础设备墙；无法保证所有厂商设备支持。
-
-- [ ] **P5-09 多开页面自适应布局**
-  - 完成判定：同一设备的多个 display/session 可自动布局、聚焦、关闭，窗口缩放时保持比例。
-  - 验证证据：Widget 测试和至少一个支持虚拟显示的真机演示。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：依赖 P5-08。
+  - 备注：长时间验收可与延期的 P4-04 集中执行，但不得在发布候选前跳过。
 
 ## P6：性能调度与压测（预计 5–10 天）
 
@@ -402,12 +460,12 @@
   - 提交/文件：
   - 备注：
 
-- [ ] **P6-02 可见性与聚焦调度**
-  - 完成判定：聚焦、普通可见、离屏三种状态具有明确分辨率/FPS策略，切换不会泄漏资源。
-  - 验证证据：策略切换前后指标对比。
+- [ ] **P6-02 可见性与聚焦策略性能调优**
+  - 完成判定：基于 P5-12 已实现策略，用 P6-01 指标确定聚焦、普通可见、离屏三种状态的最终分辨率/FPS/音频阈值，并证明切换无资源泄漏或持续延迟增长。
+  - 验证证据：1/4/8 Session 策略切换前后的 CPU、GPU、内存、码率、延迟和恢复时间对比。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：P5-12 负责功能正确性，本项只负责用规模数据调参和确定产品默认值，避免重复实现。
 
 - [ ] **P6-05 D3D11 硬解与零拷贝视频路径**
   - 完成判定：Windows 使用硬件解码，并通过 D3D11 共享纹理或等效路径交给 Flutter；不再为每帧执行全尺寸 CPU NV12→RGBA，且保留软件回退。
@@ -563,10 +621,10 @@
 
 ## 后续功能池（尚未排期）
 
-- [ ] 聚焦设备音频。
+- 聚焦设备音频已纳入 P5-07/P5-08，不在功能池重复排期。
 - [ ] 截图。
 - [ ] 屏幕录制。
-- [ ] 完整应用列表、应用详情、权限和进程管理。
+- 应用列表与启动已纳入 P5-01/P5-02；完整权限和进程管理保留后续排期。
 - [ ] 日志查看和性能分析。
 - [ ] 相机镜像、游戏手柄、UHID/AOA/OTG 等高级 scrcpy 能力。
 - [ ] 受控任务模板和定时自动化。
@@ -580,6 +638,9 @@
 
 | 日期 | 决策/变更 | 原因 | 影响 |
 | --- | --- | --- | --- |
+| 2026-09-02 | 将应用列表/启动、虚拟屏、多应用窗口、动态尺寸和音频前置到设备墙之前 | 这些能力会改变 Session 的显示源、通道和生命周期；先做网格会导致底层返工 | P5 重排为应用与显示源、音频、多 Session 与设备墙三段；原未开始的 P5-01～P5-09 重新编号为 P5-01～P5-15 |
+| 2026-09-02 | 音频采用聚焦策略且不承诺按虚拟屏/单应用隔离 | scrcpy playback capture 通常是设备级输出，多窗口同时播放会混乱且增加资源占用 | 设备墙默认每台设备只有一个音频焦点，音频失败不得中断视频 |
+| 2026-09-02 | P4-08 已完成安全批量调度底座 | 安装/卸载已覆盖并发、超时、取消、重试和逐项结果 | 原 P5 批量框架不再重复实现，P5-13 直接复用 |
 | 2026-08-31 | 首发平台暂定 Windows | 产品目标首先是桌面设备墙 | 其他平台保留模板但不承诺支持 |
 | 2026-08-31 | 暂定 scrcpy 4.1 | 固定协议版本，避免客户端和 server 不匹配 | 升级必须经过协议及真机回归 |
 | 2026-08-31 | 稳定目标 8 台、压力测试 16 台 | 先通过实测确定产品上限 | 16 台不是预先承诺的稳定能力 |
@@ -604,3 +665,4 @@
 | 日期 | 交接人 | 接手人 | 已完成到 | 下一步 | 已知问题/风险 |
 | --- | --- | --- | --- | --- | --- |
 | 2026-08-31 | 初始规划 | 待定 | 架构、里程碑和逐项清单 | P0-01 环境健康检查 | Flutter/ADB 命令曾阻塞，需确认进程来源 |
+

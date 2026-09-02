@@ -33,6 +33,12 @@ final class FakeInputController implements ScrcpyInputController {
   Future<void> sendText(String text) async {}
 
   @override
+  Future<void> startApplication(ScrcpyApplicationLaunch application) async {}
+
+  @override
+  Future<void> resizeDisplay({required int width, required int height}) async {}
+
+  @override
   Future<void> setClipboard(String text, {bool paste = false}) async {}
 }
 
@@ -305,6 +311,8 @@ void main() {
     expect(controller.events, hasLength(2));
     expect(controller.events.first.normalizedX, closeTo(0.5, 0.001));
     expect(controller.events.first.normalizedY, closeTo(0.125, 0.001));
+    expect(controller.events.first.videoWidth, 1080);
+    expect(controller.events.first.videoHeight, 1920);
   });
 
   testWidgets('input layer emits normalized pointer coordinates', (
@@ -318,6 +326,7 @@ void main() {
           height: 100,
           child: ScrcpyInputLayer(
             controller: controller,
+            videoSize: const Size(400, 200),
             child: const SizedBox.expand(),
           ),
         ),
@@ -331,6 +340,8 @@ void main() {
     await gesture.up();
 
     expect(controller.events.first.action, ScrcpyPointerAction.down);
+    expect(controller.events.first.videoWidth, 400);
+    expect(controller.events.first.videoHeight, 200);
     expect(controller.events.first.normalizedX, closeTo(0.25, 0.001));
     expect(controller.events.first.normalizedY, closeTo(0.25, 0.001));
     expect(controller.events.last.action, ScrcpyPointerAction.up);

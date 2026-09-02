@@ -1,6 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+
+extension on ScrcpyClient {
+  AdbToolkit get adbToolkit => AdbToolkit(adbClient);
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -13,8 +18,8 @@ void main() {
     if (serial.isEmpty || endpoint == null) return;
 
     final client = createDefaultScrcpyClient();
-    final monitor = ScrcpyDeviceMonitor(
-      client,
+    final monitor = AdbDeviceMonitor(
+      client.adbToolkit,
       interval: const Duration(days: 1),
     );
     try {
@@ -27,7 +32,7 @@ void main() {
         isTrue,
       );
 
-      await client.disconnect(endpoint);
+      await client.adbToolkit.disconnect(endpoint);
       final disconnected = await _waitFor(
         tester,
         monitor,
@@ -45,7 +50,7 @@ void main() {
         isTrue,
       );
 
-      await client.connect(endpoint);
+      await client.adbToolkit.connect(endpoint);
       final reconnected = await _waitFor(
         tester,
         monitor,
@@ -57,7 +62,7 @@ void main() {
       expect(reconnected.devices, isNotEmpty);
     } finally {
       try {
-        await client.connect(endpoint);
+        await client.adbToolkit.connect(endpoint);
       } catch (_) {
         // Preserve the original test failure; a following refresh reports it.
       }
@@ -66,10 +71,10 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 1)));
 }
 
-Future<ScrcpyDeviceSnapshot> _waitFor(
+Future<AdbDeviceSnapshot> _waitFor(
   WidgetTester tester,
-  ScrcpyDeviceMonitor monitor,
-  bool Function(ScrcpyDeviceSnapshot snapshot) predicate,
+  AdbDeviceMonitor monitor,
+  bool Function(AdbDeviceSnapshot snapshot) predicate,
 ) async {
   for (var attempt = 0; attempt < 20; attempt++) {
     final snapshot = await monitor.refresh();

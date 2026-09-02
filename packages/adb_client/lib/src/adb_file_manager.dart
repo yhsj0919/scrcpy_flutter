@@ -1,13 +1,14 @@
 import 'dart:convert';
 
-import 'package:adb_client/adb_client.dart';
+import 'adb_cancellation_token.dart';
+import 'adb_client_base.dart';
+import 'adb_command.dart';
+import 'adb_exception.dart';
 
-import 'scrcpy_error.dart';
+enum AdbFileType { file, directory, symbolicLink, other }
 
-enum ScrcpyFileType { file, directory, symbolicLink, other }
-
-final class ScrcpyFileEntry {
-  const ScrcpyFileEntry({
+final class AdbFileEntry {
+  const AdbFileEntry({
     required this.path,
     required this.name,
     required this.type,
@@ -17,19 +18,19 @@ final class ScrcpyFileEntry {
 
   final String path;
   final String name;
-  final ScrcpyFileType type;
+  final AdbFileType type;
   final int size;
   final DateTime? modifiedAt;
 }
 
-final class ScrcpyFileManager {
-  const ScrcpyFileManager({required AdbClient adbClient, required this.serial})
+final class AdbFileManager {
+  const AdbFileManager({required AdbClient adbClient, required this.serial})
     : _adb = adbClient;
 
   final AdbClient _adb;
   final String serial;
 
-  Future<List<ScrcpyFileEntry>> listDirectory(
+  Future<List<AdbFileEntry>> listDirectory(
     String path, {
     AdbCancellationToken? cancellationToken,
   }) async {
@@ -43,7 +44,7 @@ final class ScrcpyFileManager {
         .split('\u0000')
         .where((value) => value.isNotEmpty)
         .toList();
-    final entries = <ScrcpyFileEntry>[];
+    final entries = <AdbFileEntry>[];
     for (final child in paths) {
       final result = await _shell(
         "stat -c '%F|%s|%Y' -- ${_quote(child)}",
@@ -56,7 +57,7 @@ final class ScrcpyFileManager {
       if (fields.length < 3) continue;
       final seconds = int.tryParse(fields[2]);
       entries.add(
-        ScrcpyFileEntry(
+        AdbFileEntry(
           path: child,
           name: child.split('/').last,
           type: _parseType(fields[0]),
@@ -68,17 +69,15 @@ final class ScrcpyFileManager {
       );
     }
     entries.sort((a, b) {
-      if (a.type == ScrcpyFileType.directory &&
-          b.type != ScrcpyFileType.directory) {
+      if (a.type == AdbFileType.directory && b.type != AdbFileType.directory) {
         return -1;
       }
-      if (a.type != ScrcpyFileType.directory &&
-          b.type == ScrcpyFileType.directory) {
+      if (a.type != AdbFileType.directory && b.type == AdbFileType.directory) {
         return 1;
       }
       return a.name.toLowerCase().compareTo(b.name.toLowerCase());
     });
-    return List<ScrcpyFileEntry>.unmodifiable(entries);
+    return List<AdbFileEntry>.unmodifiable(entries);
   }
 
   Future<void> createDirectory(
@@ -103,8 +102,8 @@ final class ScrcpyFileManager {
     _validateRemotePath(destination);
     if (!overwrite &&
         await exists(destination, cancellationToken: cancellationToken)) {
-      throw const ScrcpyException(
-        ScrcpyErrorCode.adbFailure,
+      throw const AdbException(
+        AdbErrorCode.commandFailed,
         'Destination already exists',
       );
     }
@@ -151,8 +150,8 @@ final class ScrcpyFileManager {
     _validateRemotePath(remotePath);
     if (!overwrite &&
         await exists(remotePath, cancellationToken: cancellationToken)) {
-      throw const ScrcpyException(
-        ScrcpyErrorCode.adbFailure,
+      throw const AdbException(
+        AdbErrorCode.commandFailed,
         'Remote destination already exists',
       );
     }
@@ -188,23 +187,23 @@ final class ScrcpyFileManager {
       _quote(command),
     ], cancellationToken: cancellationToken);
     if (!result.isSuccess) {
-      throw ScrcpyException(
-        ScrcpyErrorCode.adbFailure,
+      throw AdbException(
+        AdbErrorCode.commandFailed,
         'Remote file operation failed',
-        cause: utf8.decode(result.stderr, allowMalformed: true),
+        exitCode: result.exitCode,
       );
     }
     return result;
   }
 
-  static ScrcpyFileType _parseType(String value) {
+  static AdbFileType _parseType(String value) {
     final normalized = value.toLowerCase();
-    if (normalized.contains('directory')) return ScrcpyFileType.directory;
+    if (normalized.contains('directory')) return AdbFileType.directory;
     if (normalized.contains('symbolic link')) {
-      return ScrcpyFileType.symbolicLink;
+      return AdbFileType.symbolicLink;
     }
-    if (normalized.contains('file')) return ScrcpyFileType.file;
-    return ScrcpyFileType.other;
+    if (normalized.contains('file')) return AdbFileType.file;
+    return AdbFileType.other;
   }
 
   static void _validateRemotePath(String path) {

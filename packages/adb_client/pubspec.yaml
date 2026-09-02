@@ -1,5 +1,5 @@
 name: adb_client
-description: Platform-neutral ADB domain APIs for scrcpy_flutter.
+description: Platform-neutral ADB models, connections, and device toolbox APIs.
 version: 0.1.0
 publish_to: none
 

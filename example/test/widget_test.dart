@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 import 'package:scrcpy_flutter_example/main.dart';
 
 final class _FakeDeviceService
-    implements AdbDeviceService, AdbMdnsDiscoveryService, AdbPackageService {
+    implements AdbClient, AdbMdnsDiscoveryService, AdbPackageService {
   final installs = <String>[];
   final uninstalls = <String>[];
 
@@ -57,6 +58,9 @@ final class _FakeDeviceService
     bool keepData = false,
     AdbCancellationToken? cancellationToken,
   }) async => uninstalls.add('$serial:$packageName');
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {

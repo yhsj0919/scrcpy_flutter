@@ -16,11 +16,7 @@ void main() {
     const serial = String.fromEnvironment('SCRCPY_DEVICE_SERIAL');
     if (serial.isEmpty) return;
     final client = createDefaultScrcpyClient();
-    final adb = client.adbClient;
-    if (adb is! AdbShellService) {
-      throw StateError('ADB shell is unavailable');
-    }
-    final shell = adb as AdbShellService;
+    final shell = client.adbClient;
     final session = client.createSession(
       const ScrcpySessionConfiguration(
         deviceSerial: serial,

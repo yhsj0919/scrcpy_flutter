@@ -6,12 +6,12 @@ ScrcpyClient createDefaultScrcpyClient({
   String? adbExecutablePath,
   String? scrcpyServerPath,
 }) => const ScrcpyClient(
-  adbClient: _UnsupportedAdbDeviceService(),
+  adbClient: _UnsupportedAdbClient(),
   runtimeInfo: ScrcpyRuntimeInfo(usesBundledAdb: false),
 );
 
-final class _UnsupportedAdbDeviceService implements AdbDeviceService {
-  const _UnsupportedAdbDeviceService();
+final class _UnsupportedAdbClient implements AdbClient {
+  const _UnsupportedAdbClient();
 
   @override
   Future<List<AdbDevice>> listDevices({
@@ -19,4 +19,7 @@ final class _UnsupportedAdbDeviceService implements AdbDeviceService {
   }) => Future<List<AdbDevice>>.error(
     UnsupportedError('ADB device discovery is not supported on this platform'),
   );
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

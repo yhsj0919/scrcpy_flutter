@@ -4,6 +4,7 @@ import 'package:adb_client/adb_client.dart';
 import 'package:flutter/foundation.dart';
 
 import 'scrcpy_error.dart';
+import 'scrcpy_display_source.dart';
 import 'scrcpy_video_connection.dart';
 
 enum ScrcpySessionState {
@@ -126,6 +127,7 @@ final class ScrcpySessionConfiguration {
     this.video = const ScrcpyVideoOptions(),
     this.controlEnabled = true,
     this.audioEnabled = false,
+    this.displaySource = const ScrcpyDisplaySource.main(),
     this.reconnectPolicy = const ScrcpyReconnectPolicy(),
   });
 
@@ -133,7 +135,29 @@ final class ScrcpySessionConfiguration {
   final ScrcpyVideoOptions video;
   final bool controlEnabled;
   final bool audioEnabled;
+  final ScrcpyDisplaySource displaySource;
   final ScrcpyReconnectPolicy reconnectPolicy;
+
+  void validate() {
+    if (deviceSerial.trim().isEmpty) {
+      throw ArgumentError.value(
+        deviceSerial,
+        'deviceSerial',
+        'must not be empty',
+      );
+    }
+    video.validate();
+    reconnectPolicy.validate();
+    displaySource.validate();
+    final source = displaySource;
+    if (!controlEnabled &&
+        source is ScrcpyVirtualDisplaySource &&
+        source.launchApplication != null) {
+      throw ArgumentError(
+        'controlEnabled must be true when launchApplication is configured',
+      );
+    }
+  }
 }
 
 /// Owns the lifecycle of one future scrcpy video/control connection.
@@ -342,6 +366,7 @@ final class ScrcpySession {
   Future<void> _prepare(AdbCancellationToken? cancellationToken) async {
     _setState(ScrcpySessionState.preparing);
     try {
+      configuration.validate();
       final devices = await adbDeviceService.listDevices(
         cancellationToken: cancellationToken,
       );
