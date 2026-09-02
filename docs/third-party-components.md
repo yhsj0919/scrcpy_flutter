@@ -1,6 +1,6 @@
 # 第三方组件与二进制清单
 
-更新于 2026-08-31。二进制升级必须同时更新版本、SHA-256、NOTICE 和验证记录。
+更新于 2026-09-03。二进制升级必须同时更新版本、SHA-256、NOTICE 和验证记录。
 
 ## Android SDK Platform-Tools（Windows）
 
@@ -41,4 +41,15 @@
 | `LICENSE` | `01C12035BF35AF37241298DC7AD538EB2A07E5C940437BC6876FEEAA9D1951D0` |
 
 server 升级必须同步修改协议 fixture、启动参数、资源文件名、校验值和真机回归基线。
+
+## libopus 1.5.2
+
+- 来源：Xiph.Org 官方发布包 `opus-1.5.2.tar.gz`。
+- 发布包 SHA-256：`65C1D2F78B9F2FB20082C38CBE47C951AD5839345876E46941612EE87F9A7CE1`。
+- 源码位置：`windows/third_party/opus/`。
+- 构建方式：CMake 以静态库编入 Windows 插件，不分发额外 DLL，不构建测试、示例或安装目标。
+- 用途：将 scrcpy Opus payload 解码为 48 kHz、双声道、16-bit PCM；Windows `waveOut` 负责播放。
+- 许可证：三条款 BSD 风格许可证，完整文本保留在 `windows/third_party/opus/COPYING`。
+
+升级 libopus 时必须从 Xiph.Org 官方发布目录获取，核对发布包哈希，保留 `COPYING`，并重跑 Windows Debug/Release 构建、音频单测和真机播放测试。
 

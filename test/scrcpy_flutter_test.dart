@@ -185,6 +185,9 @@ class FirstThenFailVideoConnector implements ScrcpyVideoConnector {
 }
 
 class FakeSessionVideoConnection implements ScrcpyVideoConnection {
+  @override
+  ScrcpyAudioStream? get audio => null;
+
   final doneCompleter = Completer<void>();
   var closeCalls = 0;
 

@@ -1,6 +1,7 @@
 import 'package:adb_client/adb_client.dart';
 
 import 'scrcpy_session.dart';
+import 'scrcpy_audio_packet.dart';
 import 'scrcpy_input.dart';
 import 'scrcpy_video_packet.dart';
 import 'scrcpy_video_connection_stub.dart'
@@ -19,6 +20,17 @@ final class ScrcpyVideoConnectionInfo {
   final String remoteServerPath;
 }
 
+abstract interface class ScrcpyAudioStream {
+  /// Resolves to null when scrcpy reports that capture is unavailable.
+  Future<ScrcpyAudioCodecInfo?> get codec;
+
+  Stream<ScrcpyAudioPacket> get packets;
+
+  int get bytesReceived;
+
+  Future<void> get done;
+}
+
 abstract interface class ScrcpyVideoConnection {
   ScrcpyVideoConnectionInfo get info;
 
@@ -30,6 +42,8 @@ abstract interface class ScrcpyVideoConnection {
   Stream<ScrcpyVideoPacket> get packets;
 
   ScrcpyInputController? get input;
+
+  ScrcpyAudioStream? get audio;
 
   int get bytesReceived;
 

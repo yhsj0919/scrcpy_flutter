@@ -4,6 +4,7 @@
 #include "scrcpy_flutter_plugin.h"
 
 #include <windows.h>
+#include <mmsystem.h>
 #include <codecapi.h>
 #include <icodecapi.h>
 #include <flutter/method_channel.h>
@@ -16,9 +17,12 @@
 #include <psapi.h>
 #include <wrl/client.h>
 
+#include "third_party/opus/include/opus.h"
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -423,6 +427,156 @@ class NativeVideoTexture {
   std::thread conversion_thread_;
 };
 
+class NativeAudioPlayer {
+ public:
+  NativeAudioPlayer(int32_t bit_rate) : bit_rate_(bit_rate) {
+    int error = OPUS_OK;
+    decoder_ = opus_decoder_create(48000, 2, &error);
+    if (!decoder_ || error != OPUS_OK) {
+      throw std::runtime_error("Unable to create libopus decoder");
+    }
+    try {
+      OpenOutput();
+    } catch (...) {
+      opus_decoder_destroy(decoder_);
+      decoder_ = nullptr;
+      throw;
+    }
+  }
+
+  ~NativeAudioPlayer() {
+    if (wave_out_) {
+      waveOutReset(wave_out_);
+      ReclaimBuffers(true);
+      waveOutClose(wave_out_);
+    }
+    if (decoder_) opus_decoder_destroy(decoder_);
+  }
+
+  void Decode(const std::vector<uint8_t>& bytes, int64_t pts_us, bool config) {
+    if (bytes.empty()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    ReclaimBuffers(false);
+    if (config) return;
+    std::vector<opus_int16> pcm(5760 * 2);
+    const int samples = opus_decode(
+        decoder_, bytes.data(), static_cast<opus_int32>(bytes.size()),
+        pcm.data(), 5760, 0);
+    if (samples < 0) {
+      throw std::runtime_error(std::string("libopus decode failed: ") +
+                               opus_strerror(samples));
+    }
+    int peak = 0;
+    for (int i = 0; i < samples * 2; ++i) {
+      peak = std::max(peak, std::abs(static_cast<int>(pcm[i])));
+    }
+    int64_t previous_peak = peak_sample_.load();
+    while (peak > previous_peak &&
+           !peak_sample_.compare_exchange_weak(previous_peak, peak)) {
+    }
+    ++decoded_packets_;
+    WritePcm(reinterpret_cast<const uint8_t*>(pcm.data()),
+             static_cast<DWORD>(samples * 2 * sizeof(opus_int16)));
+  }
+
+  void SetMuted(bool muted) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    muted_ = muted;
+    ApplyVolume();
+  }
+
+  void SetVolume(double volume) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    volume_ = std::clamp(volume, 0.0, 1.0);
+    ApplyVolume();
+  }
+
+  int64_t decoded_packets() const { return decoded_packets_; }
+  int64_t played_buffers() const { return played_buffers_; }
+  int64_t dropped_buffers() const { return dropped_buffers_; }
+  int64_t buffered_bytes() const { return buffered_bytes_; }
+  int64_t peak_sample() const { return peak_sample_; }
+
+ private:
+  struct AudioBuffer {
+    WAVEHDR header{};
+    std::vector<uint8_t> data;
+  };
+
+  void OpenOutput() {
+    WAVEFORMATEX format{};
+    format.wFormatTag = WAVE_FORMAT_PCM;
+    format.nChannels = 2;
+    format.nSamplesPerSec = 48000;
+    format.wBitsPerSample = 16;
+    format.nBlockAlign = 4;
+    format.nAvgBytesPerSec = 192000;
+    MMRESULT result = waveOutOpen(&wave_out_, WAVE_MAPPER, &format, 0, 0,
+                                  CALLBACK_NULL);
+    if (result != MMSYSERR_NOERROR) {
+      throw std::runtime_error("Unable to open Windows audio output");
+    }
+    ApplyVolume();
+  }
+
+  void WritePcm(const uint8_t* bytes, DWORD length) {
+    if (length == 0) return;
+    ReclaimBuffers(false);
+    if (buffers_.size() >= 24) {
+      ++dropped_buffers_;
+      return;
+    }
+    auto buffer = std::make_unique<AudioBuffer>();
+    buffer->data.assign(bytes, bytes + length);
+    buffer->header.lpData = reinterpret_cast<LPSTR>(buffer->data.data());
+    buffer->header.dwBufferLength = length;
+    MMRESULT result = waveOutPrepareHeader(wave_out_, &buffer->header,
+                                           sizeof(WAVEHDR));
+    if (result != MMSYSERR_NOERROR) {
+      throw std::runtime_error("Unable to prepare Windows audio buffer");
+    }
+    result = waveOutWrite(wave_out_, &buffer->header, sizeof(WAVEHDR));
+    if (result != MMSYSERR_NOERROR) {
+      waveOutUnprepareHeader(wave_out_, &buffer->header, sizeof(WAVEHDR));
+      throw std::runtime_error("Unable to queue Windows audio buffer");
+    }
+    buffered_bytes_ += length;
+    buffers_.push_back(std::move(buffer));
+  }
+
+  void ReclaimBuffers(bool force) {
+    while (!buffers_.empty()) {
+      auto& buffer = buffers_.front();
+      if (!force && (buffer->header.dwFlags & WHDR_DONE) == 0) break;
+      waveOutUnprepareHeader(wave_out_, &buffer->header, sizeof(WAVEHDR));
+      buffered_bytes_ -= buffer->header.dwBufferLength;
+      ++played_buffers_;
+      buffers_.pop_front();
+    }
+  }
+
+  void ApplyVolume() {
+    if (!wave_out_) return;
+    const DWORD level = muted_
+                            ? 0
+                            : static_cast<DWORD>(volume_ * 65535.0);
+    waveOutSetVolume(wave_out_, level | (level << 16));
+  }
+
+  int32_t bit_rate_;
+  OpusDecoder* decoder_ = nullptr;
+  HWAVEOUT wave_out_ = nullptr;
+  bool muted_ = false;
+  double volume_ = 1.0;
+  mutable std::mutex mutex_;
+  std::deque<std::unique_ptr<AudioBuffer>> buffers_;
+  std::atomic<int64_t> decoded_packets_ = 0;
+  std::atomic<int64_t> played_buffers_ = 0;
+  std::atomic<int64_t> dropped_buffers_ = 0;
+  std::atomic<int64_t> buffered_bytes_ = 0;
+  std::atomic<int64_t> peak_sample_ = 0;
+};
+
 void ScrcpyFlutterPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
   auto video_channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -432,6 +586,14 @@ void ScrcpyFlutterPlugin::RegisterWithRegistrar(
   video_channel->SetMethodCallHandler([pointer = plugin.get()](const auto& call, auto result) {
     pointer->HandleVideoMethodCall(call, std::move(result));
   });
+  auto audio_channel =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          registrar->messenger(), "scrcpy_flutter/audio",
+          &flutter::StandardMethodCodec::GetInstance());
+  audio_channel->SetMethodCallHandler(
+      [pointer = plugin.get()](const auto& call, auto result) {
+        pointer->HandleAudioMethodCall(call, std::move(result));
+      });
   registrar->AddPlugin(std::move(plugin));
 }
 
@@ -439,11 +601,82 @@ ScrcpyFlutterPlugin::ScrcpyFlutterPlugin(flutter::PluginRegistrarWindows* regist
     : texture_registrar_(registrar->texture_registrar()) {}
 
 ScrcpyFlutterPlugin::~ScrcpyFlutterPlugin() {
+  audios_.clear();
   if (texture_registrar_) {
     for (auto& entry : videos_) {
       entry.second->StopConversion();
       texture_registrar_->UnregisterTexture(entry.first);
     }
+  }
+}
+
+std::string SafeErrorMessage(const std::exception& error) {
+  std::string message = error.what();
+  for (char& value : message) {
+    const unsigned char byte = static_cast<unsigned char>(value);
+    if (byte < 0x20 || byte > 0x7e) value = '?';
+  }
+  return message;
+}
+
+void ScrcpyFlutterPlugin::HandleAudioMethodCall(
+    const flutter::MethodCall<flutter::EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  try {
+    const auto& args = Args(call);
+    if (call.method_name() == "create") {
+      const int64_t id = next_audio_id_++;
+      audios_[id] = std::make_unique<NativeAudioPlayer>(
+          static_cast<int32_t>(GetInt(args, "bitRate")));
+      result->Success(flutter::EncodableValue(id));
+    } else if (call.method_name() == "decode") {
+      auto audio = audios_.find(GetInt(args, "audioId"));
+      if (audio == audios_.end()) throw std::invalid_argument("Unknown audio");
+      const auto* data = std::get_if<std::vector<uint8_t>>(&Get(args, "data"));
+      if (!data) throw std::invalid_argument("Invalid audio packet data");
+      audio->second->Decode(*data, GetInt(args, "pts"),
+                            GetBool(args, "config"));
+      result->Success();
+    } else if (call.method_name() == "setMuted") {
+      auto audio = audios_.find(GetInt(args, "audioId"));
+      if (audio == audios_.end()) throw std::invalid_argument("Unknown audio");
+      audio->second->SetMuted(GetBool(args, "muted"));
+      result->Success();
+    } else if (call.method_name() == "setVolume") {
+      auto audio = audios_.find(GetInt(args, "audioId"));
+      if (audio == audios_.end()) throw std::invalid_argument("Unknown audio");
+      const auto& value = Get(args, "volume");
+      double volume = 0;
+      if (const auto* number = std::get_if<double>(&value)) {
+        volume = *number;
+      } else {
+        throw std::invalid_argument("Invalid audio volume");
+      }
+      audio->second->SetVolume(volume);
+      result->Success();
+    } else if (call.method_name() == "audioStats") {
+      auto audio = audios_.find(GetInt(args, "audioId"));
+      if (audio == audios_.end()) throw std::invalid_argument("Unknown audio");
+      flutter::EncodableMap stats;
+      stats[flutter::EncodableValue("decodedPackets")] =
+          flutter::EncodableValue(audio->second->decoded_packets());
+      stats[flutter::EncodableValue("playedBuffers")] =
+          flutter::EncodableValue(audio->second->played_buffers());
+      stats[flutter::EncodableValue("droppedBuffers")] =
+          flutter::EncodableValue(audio->second->dropped_buffers());
+      stats[flutter::EncodableValue("bufferedBytes")] =
+          flutter::EncodableValue(audio->second->buffered_bytes());
+      stats[flutter::EncodableValue("peakSample")] =
+          flutter::EncodableValue(audio->second->peak_sample());
+      result->Success(flutter::EncodableValue(stats));
+    } else if (call.method_name() == "dispose") {
+      audios_.erase(GetInt(args, "audioId"));
+      result->Success();
+    } else {
+      result->NotImplemented();
+    }
+  } catch (const std::exception& error) {
+    result->Error("native_audio_error", SafeErrorMessage(error));
   }
 }
 

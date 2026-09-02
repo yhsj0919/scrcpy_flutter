@@ -8,6 +8,9 @@ final class _FakeVideoConnection implements ScrcpyVideoConnection {
   _FakeVideoConnection({this.codecId = ScrcpyVideoCodecInfo.h264});
 
   final int codecId;
+
+  @override
+  ScrcpyAudioStream? get audio => null;
   final sessionsController = StreamController<ScrcpyVideoCodecInfo>();
   final packetsController = StreamController<ScrcpyVideoPacket>();
   bool closed = false;

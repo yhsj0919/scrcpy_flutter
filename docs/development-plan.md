@@ -16,12 +16,12 @@
 
 ## 当前交接摘要
 
-- 当前阶段：P5-A 应用与显示源。
-- 当前状态：P0～P4 与 P5-00～P5-06 已完成；Demo 已提供同页新增、排列、切换应用、旋转、动态适应和关闭任意虚拟屏的工作台。P3-05 和 P4-04 长时间稳定性测试按决策延期，仍保持未勾选。
-- 下一项：P5-07 scrcpy 音频协议与传输，随后完成 Windows 音频播放与焦点，再进入设备墙。
+- 当前阶段：P5-B 音频。
+- 当前状态：P0～P4 与 P5-00～P5-06 已完成；P5-07 已完成协议实现和 Android 16 Opus 真机闭环，Android 10/11/12+ 兼容性按决策延期。P5-08 已完成 libopus + waveOut 播放、音量、静音、队列指标和真机闭环，等待多窗口音频焦点及长时间验收。
+- 下一项：完成 P5-08 多窗口音频焦点、断线重连和 30 分钟验收，再进入设备墙。
 - 当前阻塞：无；真实批量安装/卸载仍等待专用测试 APK 做补充真机验收，不阻塞 P5。
 - 已选基线：Windows、scrcpy 4.1、平台原生解码、网络/USB ADB、H.264；P5 增加 Opus 音频与虚拟显示。
-- 当前功能闭环：USB/网络/配对码连接，实时画面，画质配置，scrcpy 基础控制、模拟触摸、剪贴板、设备管理与安全批量包操作。
+- 当前功能闭环：USB/网络/配对码连接，实时画面，画质配置，scrcpy 基础控制、模拟触摸、剪贴板、设备管理、安全批量包操作，以及 Android 16 Opus 编码音频传输。
 - 交付形态：从 P0 起按可嵌入 Flutter 插件实现；example 只消费插件公开 API，不承载核心逻辑。
 - 已完成增强：设备详情、文件管理、设备/应用 CPU/内存/GPU 状态，以及安装/卸载等批量 ADB 操作。
 - 稳定目标：8 台设备；压力测试目标：16 台设备。
@@ -388,15 +388,15 @@
   - 完成判定：Session 独立管理 video/audio/control 通道；解析音频 codec/config/packet，支持音频可选、失败降级和 require-audio 语义，不影响现有纯视频调用方。
   - 验证证据：协议分包、断流、音频不可用、Android 10/11/12+ 行为测试和真机原始包记录。
   - 完成日期：
-  - 提交/文件：
-  - 备注：首版优先 Opus；Android 11 启动条件及应用禁止 playback capture 必须明确提示。
+  - 提交/文件：`lib/src/scrcpy_audio_packet.dart`、`lib/src/scrcpy_video_connection*.dart`、`lib/src/scrcpy_session.dart`、`test/scrcpy_audio_packet_test.dart`、`example/integration_test/audio_transport_test.dart`、`docs/reports/p5-audio-transport.md`
+  - 备注：首版优先 Opus；已实现独立 audio socket、codec/config/packet/PTS 解析、可选降级和 require-audio 清理语义。Xiaomi Android 16 真机取得 Opus 原始包并通过验收。仍待 Android 10/11/12+ 补验，因此暂不勾选；Android 11 启动条件及应用禁止 playback capture 必须明确提示。
 
 - [ ] **P5-08 Windows 音频解码、播放与焦点**
   - 完成判定：Windows 低延迟播放设备音频，支持静音、音量、缓冲和延迟统计；多个窗口同时存在时默认只播放聚焦窗口，切换无明显爆音或资源泄漏。
   - 验证证据：音画延迟、焦点切换、静音、断线重连和 30 分钟真机测试。
   - 完成日期：
-  - 提交/文件：
-  - 备注：音频通常是设备级 playback capture，不承诺按虚拟屏或单应用隔离；设备墙默认每台设备最多一个音频焦点。
+  - 提交/文件：`lib/src/scrcpy_audio.dart`、`lib/src/native_scrcpy_audio.dart`、`windows/scrcpy_flutter_plugin.cpp`、`windows/third_party/opus/`、`example/integration_test/audio_playback_test.dart`、`docs/reports/p5-audio-playback.md`
+  - 备注：已完成 libopus 静态解码、waveOut PCM 播放、音量、静音、有限缓冲队列与统计，并接入单设备 Demo；音频不可用不阻断视频。Xiaomi Android 16 真机 54 包解码、48 缓冲播放、0 丢弃。多虚拟屏暂不开音频，仍待焦点切换、重连和 30 分钟验收。音频通常是设备级 playback capture，不承诺按虚拟屏或单应用隔离；设备墙默认每台设备最多一个音频焦点。
 
 ### P5-C：多 Session 与设备墙
 
@@ -639,6 +639,7 @@
 | 日期 | 决策/变更 | 原因 | 影响 |
 | --- | --- | --- | --- |
 | 2026-09-02 | 将应用列表/启动、虚拟屏、多应用窗口、动态尺寸和音频前置到设备墙之前 | 这些能力会改变 Session 的显示源、通道和生命周期；先做网格会导致底层返工 | P5 重排为应用与显示源、音频、多 Session 与设备墙三段；原未开始的 P5-01～P5-09 重新编号为 P5-01～P5-15 |
+| 2026-09-03 | 暂缓 Android 10/11/12+ 音频兼容性，直接推进 Windows 播放 | 当前没有这些版本的测试设备，Android 16 协议与原始 Opus 包已验证 | P5-07 保持未勾选，兼容性补验不阻塞 P5-08 开发 |
 | 2026-09-02 | 音频采用聚焦策略且不承诺按虚拟屏/单应用隔离 | scrcpy playback capture 通常是设备级输出，多窗口同时播放会混乱且增加资源占用 | 设备墙默认每台设备只有一个音频焦点，音频失败不得中断视频 |
 | 2026-09-02 | P4-08 已完成安全批量调度底座 | 安装/卸载已覆盖并发、超时、取消、重试和逐项结果 | 原 P5 批量框架不再重复实现，P5-13 直接复用 |
 | 2026-08-31 | 首发平台暂定 Windows | 产品目标首先是桌面设备墙 | 其他平台保留模板但不承诺支持 |

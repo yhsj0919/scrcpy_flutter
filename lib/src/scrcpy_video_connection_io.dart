@@ -9,6 +9,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'scrcpy_error.dart';
+import 'scrcpy_audio_packet.dart';
 import 'scrcpy_control_message.dart';
 import 'scrcpy_display_source.dart';
 import 'scrcpy_input.dart';
@@ -120,7 +121,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         'log_level=info',
         'tunnel_forward=true',
         'video=true',
-        'audio=false',
+        'audio=${configuration.audioEnabled}',
         'control=${configuration.controlEnabled}',
         'clipboard_autosync=false',
         'cleanup=true',
@@ -129,6 +130,12 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         'max_size=${video.maxSize}',
         'max_fps=${video.maxFps}',
         'video_bit_rate=${video.bitRate}',
+        if (configuration.audioEnabled) ...<String>[
+          'audio_codec=${configuration.audio.codec.serverName}',
+          'audio_bit_rate=${configuration.audio.bitRate}',
+          'audio_source=${configuration.audio.source.serverName}',
+          'audio_dup=${configuration.audio.duplicateOnDevice}',
+        ],
         if (video.encoder case final encoder?) 'video_encoder=$encoder',
         ...configuration.displaySource.toServerArguments(),
       ];
@@ -158,6 +165,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
       serverProcess.stderr.listen(collectServerOutput);
       final sockets = await _connectWithRetry(
         port,
+        audioEnabled: configuration.audioEnabled,
         controlEnabled: configuration.controlEnabled,
         cancellationToken: cancellationToken,
       );
@@ -165,6 +173,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         _adb,
         configuration.deviceSerial,
         sockets.video,
+        sockets.audio,
         sockets.control,
         serverProcess,
         serverOutput,
@@ -174,6 +183,28 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
           remoteServerPath: remotePath,
         ),
       );
+      if (configuration.audioRequired) {
+        ScrcpyAudioCodecInfo? audioCodec;
+        try {
+          audioCodec = await connection.audio!.codec.timeout(
+            const Duration(seconds: 5),
+          );
+        } catch (error) {
+          await connection.close();
+          throw ScrcpyException(
+            ScrcpyErrorCode.connectionFailure,
+            'scrcpy audio capture is required but did not become ready',
+            cause: error,
+          );
+        }
+        if (audioCodec == null) {
+          await connection.close();
+          throw const ScrcpyException(
+            ScrcpyErrorCode.connectionFailure,
+            'scrcpy audio capture is required but unavailable',
+          );
+        }
+      }
       final source = configuration.displaySource;
       if (source is ScrcpyVirtualDisplaySource) {
         final application = source.launchApplication;
@@ -202,6 +233,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
 
   Future<_SocketPair> _connectWithRetry(
     int port, {
+    required bool audioEnabled,
     required bool controlEnabled,
     AdbCancellationToken? cancellationToken,
   }) async {
@@ -214,6 +246,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         );
       }
       _ReadySocket? video;
+      _ReadySocket? audio;
       _ReadySocket? control;
       try {
         video = _ReadySocket(
@@ -223,6 +256,15 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
             timeout: const Duration(milliseconds: 500),
           ),
         );
+        if (audioEnabled) {
+          audio = _ReadySocket(
+            await Socket.connect(
+              InternetAddress.loopbackIPv4,
+              port,
+              timeout: const Duration(milliseconds: 500),
+            ),
+          );
+        }
         if (controlEnabled) {
           control = _ReadySocket(
             await Socket.connect(
@@ -236,13 +278,15 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
           const Duration(milliseconds: 500),
           onTimeout: () => false,
         );
-        if (ready) return _SocketPair(video, control);
+        if (ready) return _SocketPair(video, audio, control);
         lastError = StateError('scrcpy socket closed before becoming ready');
         await _ignoreFailure(video.close());
+        if (audio != null) await _ignoreFailure(audio.close());
         if (control != null) await _ignoreFailure(control.close());
       } catch (error) {
         lastError = error;
         if (video != null) await _ignoreFailure(video.close());
+        if (audio != null) await _ignoreFailure(audio.close());
         if (control != null) await _ignoreFailure(control.close());
       }
       await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -256,9 +300,10 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
 }
 
 final class _SocketPair {
-  const _SocketPair(this.video, this.control);
+  const _SocketPair(this.video, this.audio, this.control);
 
   final _ReadySocket video;
+  final _ReadySocket? audio;
   final _ReadySocket? control;
 }
 
@@ -299,11 +344,13 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
     this._adb,
     this._serial,
     this._socket,
+    _ReadySocket? audioSocket,
     _ReadySocket? controlSocket,
     this._serverProcess,
     this._serverOutput, {
     required this.info,
   }) {
+    _audio = audioSocket == null ? null : _IoScrcpyAudioStream(audioSocket);
     _input = controlSocket == null
         ? null
         : _IoScrcpyInputController(controlSocket);
@@ -375,6 +422,7 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
   final String _serial;
   final _ReadySocket _socket;
   late final _IoScrcpyInputController? _input;
+  late final _IoScrcpyAudioStream? _audio;
   final AdbRunningCommand _serverProcess;
   final BytesBuilder _serverOutput;
   final Completer<ScrcpyVideoCodecInfo> _codec =
@@ -405,6 +453,9 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
   ScrcpyInputController? get input => _input;
 
   @override
+  ScrcpyAudioStream? get audio => _audio;
+
+  @override
   int get bytesReceived => _bytesReceived;
 
   @override
@@ -416,6 +467,9 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
     _closed = true;
     if (_input != null) {
       await _ignoreFailure(_input.close().timeout(const Duration(seconds: 2)));
+    }
+    if (_audio != null) {
+      await _ignoreFailure(_audio.close().timeout(const Duration(seconds: 2)));
     }
     await _ignoreFailure(_socket.close().timeout(const Duration(seconds: 2)));
     _serverProcess.kill();
@@ -435,6 +489,74 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
           .shell(_serial, <String>['rm', '-f', info.remoteServerPath])
           .timeout(const Duration(seconds: 2)),
     );
+    if (!_done.isCompleted) _done.complete();
+  }
+}
+
+final class _IoScrcpyAudioStream implements ScrcpyAudioStream {
+  _IoScrcpyAudioStream(this._socket) {
+    _parser = ScrcpyAudioPacketParser(
+      onCodec: (value) {
+        if (!_codec.isCompleted) _codec.complete(value);
+      },
+      onDisabled: () {
+        if (!_codec.isCompleted) _codec.complete(null);
+      },
+      onPacket: _packets.add,
+    );
+    _subscription = _socket.chunks.listen(
+      (data) {
+        _bytesReceived += data.length;
+        try {
+          _parser.add(data);
+        } catch (error, stackTrace) {
+          if (!_codec.isCompleted) _codec.completeError(error, stackTrace);
+          _packets.addError(error, stackTrace);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!_codec.isCompleted) _codec.completeError(error, stackTrace);
+        _packets.addError(error, stackTrace);
+        if (!_done.isCompleted) _done.completeError(error, stackTrace);
+      },
+      onDone: () {
+        if (!_codec.isCompleted) _codec.complete(null);
+        unawaited(_packets.close());
+        if (!_done.isCompleted) _done.complete();
+      },
+    );
+  }
+
+  final _ReadySocket _socket;
+  final Completer<ScrcpyAudioCodecInfo?> _codec =
+      Completer<ScrcpyAudioCodecInfo?>();
+  final StreamController<ScrcpyAudioPacket> _packets =
+      StreamController<ScrcpyAudioPacket>();
+  final Completer<void> _done = Completer<void>();
+  late final ScrcpyAudioPacketParser _parser;
+  late final StreamSubscription<Uint8List> _subscription;
+  int _bytesReceived = 0;
+  bool _closed = false;
+
+  @override
+  Future<ScrcpyAudioCodecInfo?> get codec => _codec.future;
+
+  @override
+  Stream<ScrcpyAudioPacket> get packets => _packets.stream;
+
+  @override
+  int get bytesReceived => _bytesReceived;
+
+  @override
+  Future<void> get done => _done.future;
+
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    await _subscription.cancel();
+    await _socket.close();
+    if (!_codec.isCompleted) _codec.complete(null);
+    await _packets.close();
     if (!_done.isCompleted) _done.complete();
   }
 }

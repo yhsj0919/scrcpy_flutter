@@ -4,6 +4,7 @@ import 'package:adb_client/adb_client.dart';
 import 'package:flutter/foundation.dart';
 
 import 'scrcpy_error.dart';
+import 'scrcpy_audio_packet.dart';
 import 'scrcpy_display_source.dart';
 import 'scrcpy_video_connection.dart';
 
@@ -121,12 +122,47 @@ final class ScrcpyVideoOptions {
   }
 }
 
+enum ScrcpyAudioSource {
+  output('output'),
+  playback('playback');
+
+  const ScrcpyAudioSource(this.serverName);
+  final String serverName;
+}
+
+final class ScrcpyAudioOptions {
+  const ScrcpyAudioOptions({
+    this.codec = ScrcpyAudioCodec.opus,
+    this.bitRate = 128000,
+    this.source = ScrcpyAudioSource.output,
+    this.duplicateOnDevice = false,
+  });
+
+  final ScrcpyAudioCodec codec;
+  final int bitRate;
+  final ScrcpyAudioSource source;
+  final bool duplicateOnDevice;
+
+  void validate() {
+    if (bitRate < 8000 || bitRate > 1000000) {
+      throw RangeError.range(bitRate, 8000, 1000000, 'bitRate');
+    }
+    if (duplicateOnDevice && source != ScrcpyAudioSource.playback) {
+      throw ArgumentError(
+        'duplicateOnDevice requires ScrcpyAudioSource.playback',
+      );
+    }
+  }
+}
+
 final class ScrcpySessionConfiguration {
   const ScrcpySessionConfiguration({
     required this.deviceSerial,
     this.video = const ScrcpyVideoOptions(),
     this.controlEnabled = true,
     this.audioEnabled = false,
+    this.audioRequired = false,
+    this.audio = const ScrcpyAudioOptions(),
     this.displaySource = const ScrcpyDisplaySource.main(),
     this.reconnectPolicy = const ScrcpyReconnectPolicy(),
   });
@@ -135,6 +171,8 @@ final class ScrcpySessionConfiguration {
   final ScrcpyVideoOptions video;
   final bool controlEnabled;
   final bool audioEnabled;
+  final bool audioRequired;
+  final ScrcpyAudioOptions audio;
   final ScrcpyDisplaySource displaySource;
   final ScrcpyReconnectPolicy reconnectPolicy;
 
@@ -147,8 +185,14 @@ final class ScrcpySessionConfiguration {
       );
     }
     video.validate();
+    audio.validate();
     reconnectPolicy.validate();
     displaySource.validate();
+    if (audioRequired && !audioEnabled) {
+      throw ArgumentError(
+        'audioEnabled must be true when audioRequired is true',
+      );
+    }
     final source = displaySource;
     if (!controlEnabled &&
         source is ScrcpyVirtualDisplaySource &&

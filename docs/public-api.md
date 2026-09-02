@@ -104,6 +104,44 @@ final h264Encoders = capabilities.forCodec(ScrcpyVideoCodec.h264);
 
 探测结果区分硬件/软件、vendor 和 alias 编码器。当前 Windows Native Texture 后端仅声明 H.264 解码能力；设备即使具有 H.265/AV1 编码器，选择后也会得到明确的 `unsupportedCapability`，不会以黑屏代替错误。
 
+音频传输默认关闭，不影响原有纯视频 Session。需要原始 Opus 包时显式启用：
+
+```dart
+final session = client.createSession(
+  const ScrcpySessionConfiguration(
+    deviceSerial: '实际序列号只保存在内存',
+    audioEnabled: true,
+    audioRequired: false, // 不可用时保留视频；true 则启动失败并清理
+    audio: ScrcpyAudioOptions(codec: ScrcpyAudioCodec.opus),
+  ),
+);
+final connection = await session.start();
+final audio = connection.audio!;
+final codec = await audio.codec; // null 表示设备端禁用或不可用
+audio.packets.listen((packet) {
+  // packet.data 是编码 payload，PTS 保留 scrcpy server 原值。
+});
+```
+
+当前公开的是编码音频传输层；Windows 解码、播放、音量和焦点属于 P5-08。
+
+Windows 可直接创建原生播放器；停止播放器不会关闭共享的视频连接：
+
+```dart
+final player = createNativeScrcpyAudioController(
+  connection.audio!,
+  bitRate: 128000,
+);
+await player.start();
+await player.setVolume(0.5);
+await player.setMuted(true);
+await player.setMuted(false);
+await player.stop();
+player.dispose();
+```
+
+通过 `player.value` 可观察播放状态、编码包数、传输字节、解码包、已播放/丢弃缓冲和当前缓冲字节。当前只支持 Opus；多窗口音频焦点策略仍在 P5-08 后续项中。
+
 P0 的 `prepare()` 仅确认设备存在且状态可用。P1/P2 将在同一生命周期后面接入 server、socket、forward、Player 和 texture，不改变宿主的基本所有权模型。
 
 ## 视频组件

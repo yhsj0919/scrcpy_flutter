@@ -705,6 +705,8 @@ class DeviceSessionPage extends StatefulWidget {
   State<DeviceSessionPage> createState() => _DeviceSessionPageState();
 }
 
+enum _AudioPlaybackTarget { computer, phone }
+
 class _DeviceSessionPageState extends State<DeviceSessionPage> {
   late ScrcpySession _session;
   AdbDeviceStatusMonitor? _statusMonitor;
@@ -712,6 +714,11 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   StreamSubscription<AdbDeviceStatus>? _statusSubscription;
   Object? _error;
   ScrcpyVideoController? _videoController;
+  ScrcpyAudioController? _audioController;
+  Object? _audioError;
+  bool _audioMuted = false;
+  double _audioVolume = 1;
+  _AudioPlaybackTarget _audioPlaybackTarget = _AudioPlaybackTarget.computer;
   ScrcpyInputController? _inputController;
   ScrcpyClipboardSynchronizer? _clipboardSync;
   ScrcpyVideoConnectionInfo? _connectionInfo;
@@ -752,6 +759,12 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     ScrcpySessionConfiguration(
       deviceSerial: widget.device.serial,
       controlEnabled: true,
+      audioEnabled: _audioPlaybackTarget == _AudioPlaybackTarget.computer,
+      audio: ScrcpyAudioOptions(
+        codec: ScrcpyAudioCodec.opus,
+        source: ScrcpyAudioSource.playback,
+        duplicateOnDevice: false,
+      ),
       displaySource: widget.displaySource,
       reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
       video: ScrcpyVideoOptions(
@@ -864,8 +877,17 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     bool isReconnect = false,
   }) async {
     final previousVideo = _videoController;
+    final previousAudio = _audioController;
     final previousClipboard = _clipboardSync;
     await previousClipboard?.stop();
+    if (previousAudio != null) {
+      try {
+        await previousAudio.stop();
+      } catch (_) {
+        // A disconnected audio socket may already have stopped the player.
+      }
+      previousAudio.dispose();
+    }
     if (previousVideo != null) {
       try {
         await previousVideo.stop();
@@ -875,14 +897,20 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
       previousVideo.dispose();
     }
     final controller = createNativeScrcpyVideoController(connection);
+    final audioStream = connection.audio;
+    final audio = audioStream == null
+        ? null
+        : createNativeScrcpyAudioController(audioStream);
     final codec = await connection.codec;
     if (!mounted) {
       controller.dispose();
+      audio?.dispose();
       await connection.close();
       return;
     }
     setState(() {
       _videoController = controller;
+      _audioController = audio;
       _inputController = connection.input;
       _connectionInfo = connection.info;
       _activeCodec = codec;
@@ -897,20 +925,41 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
             );
       _clipboardSyncEnabled = false;
       _error = null;
+      _audioError = null;
     });
     await controller.start();
+    if (audio != null) {
+      try {
+        await audio.setVolume(_audioVolume);
+        await audio.setMuted(_audioMuted);
+        await audio.start();
+      } catch (error) {
+        audio.dispose();
+        if (mounted) {
+          setState(() {
+            if (identical(_audioController, audio)) _audioController = null;
+            _audioError = error;
+          });
+        }
+      }
+    }
   }
 
   Future<void> _stopVideo() async {
     final controller = _videoController;
     if (controller == null) return;
     await _clipboardSync?.stop();
+    final audio = _audioController;
+    if (audio != null) await audio.stop();
     await _session.stop();
     await controller.stop();
     controller.dispose();
+    audio?.dispose();
     if (mounted) {
       setState(() {
         _videoController = null;
+        _audioController = null;
+        _audioError = null;
         _inputController = null;
         _clipboardSync = null;
         _clipboardSyncEnabled = false;
@@ -918,6 +967,47 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
         _activeCodec = null;
         _reconnectCount = 0;
       });
+    }
+  }
+
+  Future<void> _setAudioMuted(bool muted) async {
+    _audioMuted = muted;
+    try {
+      await _audioController?.setMuted(muted);
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (mounted) setState(() => _audioError = error);
+    }
+  }
+
+  Future<void> _setAudioVolume(double volume) async {
+    _audioVolume = volume;
+    try {
+      await _audioController?.setVolume(volume);
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (mounted) setState(() => _audioError = error);
+    }
+  }
+
+  Future<void> _setAudioPlaybackTarget(_AudioPlaybackTarget target) async {
+    if (target == _audioPlaybackTarget || _startingVideo) return;
+    final wasRunning = _videoController != null;
+    if (wasRunning) await _stopVideo();
+    await _reconnectSubscription?.cancel();
+    _session.dispose();
+    if (!mounted) return;
+    setState(() {
+      _audioPlaybackTarget = target;
+      _session = _createSession();
+      _error = null;
+    });
+    _bindReconnects();
+    try {
+      await _session.prepare();
+      if (wasRunning) await _startVideo();
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
     }
   }
 
@@ -1018,6 +1108,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     unawaited(_statusSubscription?.cancel());
     unawaited(_statusMonitor?.close());
     unawaited(_clipboardSync?.stop());
+    _audioController?.dispose();
     _textInputController.dispose();
     _videoController?.dispose();
     _session.dispose();
@@ -1139,6 +1230,31 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
             spacing: 12,
             runSpacing: 8,
             children: <Widget>[
+              SizedBox(
+                width: 160,
+                child: DropdownButtonFormField<_AudioPlaybackTarget>(
+                  isExpanded: true,
+                  initialValue: _audioPlaybackTarget,
+                  decoration: const InputDecoration(labelText: '声音播放位置'),
+                  items: const <DropdownMenuItem<_AudioPlaybackTarget>>[
+                    DropdownMenuItem(
+                      value: _AudioPlaybackTarget.computer,
+                      child: Text('电脑播放'),
+                    ),
+                    DropdownMenuItem(
+                      value: _AudioPlaybackTarget.phone,
+                      child: Text('手机播放'),
+                    ),
+                  ],
+                  onChanged: _startingVideo
+                      ? null
+                      : (value) {
+                          if (value != null) {
+                            unawaited(_setAudioPlaybackTarget(value));
+                          }
+                        },
+                ),
+              ),
               SizedBox(
                 width: 150,
                 child: DropdownButtonFormField<int>(
@@ -1287,6 +1403,56 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
                     '${(video.bytesReceived / 1024 / 1024).toStringAsFixed(1)} MB',
                   ),
                 ),
+              ),
+            ),
+          ],
+          if (_audioController case final audio?) ...<Widget>[
+            const SizedBox(height: 12),
+            ValueListenableBuilder<ScrcpyAudioState>(
+              valueListenable: audio,
+              builder: (context, state, _) => Card(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      IconButton(
+                        tooltip: state.muted ? '恢复设备声音' : '静音设备声音',
+                        onPressed: () => _setAudioMuted(!state.muted),
+                        icon: Icon(
+                          state.muted ? Icons.volume_off : Icons.volume_up,
+                        ),
+                      ),
+                      Expanded(
+                        child: Slider(
+                          value: state.volume,
+                          onChanged: _setAudioVolume,
+                        ),
+                      ),
+                      Flexible(
+                        child: Text(
+                          '${state.codec ?? 'Opus'} · '
+                          '峰值 ${(state.peakLevel * 100).toStringAsFixed(0)}% · '
+                          '解码 ${state.decodedPackets} · '
+                          '播放 ${state.playedBuffers} · '
+                          '丢弃 ${state.droppedBuffers}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ] else if (_audioError case final audioError?) ...<Widget>[
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.volume_off),
+                title: const Text('设备音频不可用，画面继续运行'),
+                subtitle: Text('$audioError'),
               ),
             ),
           ],

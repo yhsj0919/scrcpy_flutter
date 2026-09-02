@@ -11,6 +11,7 @@
 namespace scrcpy_flutter {
 
 class NativeVideoTexture;
+class NativeAudioPlayer;
 
 class ScrcpyFlutterPlugin : public flutter::Plugin {
  public:
@@ -28,9 +29,15 @@ class ScrcpyFlutterPlugin : public flutter::Plugin {
       const flutter::MethodCall<flutter::EncodableValue>& method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
+  void HandleAudioMethodCall(
+      const flutter::MethodCall<flutter::EncodableValue>& method_call,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
  private:
   flutter::TextureRegistrar* texture_registrar_;
   std::unordered_map<int64_t, std::unique_ptr<NativeVideoTexture>> videos_;
+  std::unordered_map<int64_t, std::unique_ptr<NativeAudioPlayer>> audios_;
+  int64_t next_audio_id_ = 1;
 };
 
 }  // namespace scrcpy_flutter
