@@ -4,7 +4,10 @@ import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 import 'package:scrcpy_flutter_example/main.dart';
 
 final class _FakeDeviceService
-    implements AdbDeviceService, AdbMdnsDiscoveryService {
+    implements AdbDeviceService, AdbMdnsDiscoveryService, AdbPackageService {
+  final installs = <String>[];
+  final uninstalls = <String>[];
+
   @override
   Future<List<AdbDevice>> listDevices({
     AdbCancellationToken? cancellationToken,
@@ -38,6 +41,22 @@ final class _FakeDeviceService
       endpoint: AdbEndpoint(host: '192.0.2.20', port: 42002),
     ),
   ];
+
+  @override
+  Future<void> install(
+    String serial,
+    String apkPath, {
+    bool replaceExisting = false,
+    AdbCancellationToken? cancellationToken,
+  }) async => installs.add(serial);
+
+  @override
+  Future<void> uninstall(
+    String serial,
+    String packageName, {
+    bool keepData = false,
+    AdbCancellationToken? cancellationToken,
+  }) async => uninstalls.add('$serial:$packageName');
 }
 
 void main() {
@@ -77,5 +96,46 @@ void main() {
     );
     expect(addressFields.first.controller!.text, '192.0.2.20:37123');
     expect(addressFields.last.controller!.text, '192.0.2.20:42002');
+  });
+
+  testWidgets('batch uninstall requires device selection and confirmation', (
+    tester,
+  ) async {
+    final adb = _FakeDeviceService();
+    final client = ScrcpyClient(adbClient: adb);
+    const device = AdbDevice(
+      serial: 'test-secret',
+      state: AdbDeviceState.device,
+      connectionType: AdbConnectionType.usb,
+      model: 'Pixel Test',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BatchPackagePage(
+          client: client,
+          devices: const <AdbDevice>[device],
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(CheckboxListTile).first);
+    await tester.enterText(
+      find.widgetWithText(TextField, '应用包名'),
+      'com.example.app',
+    );
+    await tester.tap(find.text('批量卸载'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('确认批量卸载？'), findsOneWidget);
+    expect(find.textContaining(device.redactedSerial), findsWidgets);
+    expect(adb.uninstalls, isEmpty);
+
+    await tester.tap(find.text('开始执行'));
+    await tester.pumpAndSettle();
+
+    expect(adb.uninstalls, <String>['test-secret:com.example.app']);
+    await tester.drag(find.byType(ListView), const Offset(0, -1200));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('成功 · 尝试 1 次'), findsOneWidget);
   });
 }

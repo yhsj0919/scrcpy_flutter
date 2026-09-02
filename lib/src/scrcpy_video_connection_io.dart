@@ -60,6 +60,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
     ScrcpySessionConfiguration configuration, {
     AdbCancellationToken? cancellationToken,
   }) async {
+    configuration.video.validate();
     await (_resourceValidation ??= validateScrcpyServerResource(
       _serverPath,
       expectedSha256: _expectedServerSha256,
@@ -120,12 +121,14 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         'video=true',
         'audio=false',
         'control=${configuration.controlEnabled}',
+        'clipboard_autosync=false',
         'cleanup=true',
         'send_device_meta=false',
-        'video_codec=${video.codec}',
+        'video_codec=${video.codec.serverName}',
         'max_size=${video.maxSize}',
         'max_fps=${video.maxFps}',
         'video_bit_rate=${video.bitRate}',
+        if (video.encoder case final encoder?) 'video_encoder=$encoder',
       ];
       serverProcess = await _adb.start(
         AdbCommand(
@@ -425,10 +428,22 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
 }
 
 final class _IoScrcpyInputController implements ScrcpyInputController {
-  _IoScrcpyInputController(this._socket);
+  _IoScrcpyInputController(this._socket) {
+    _subscription = _socket.chunks.listen(
+      _onDeviceData,
+      onError: _clipboardController.addError,
+      onDone: _onDeviceDone,
+    );
+  }
 
   final _ReadySocket _socket;
+  final ScrcpyDeviceMessageParser _deviceParser = ScrcpyDeviceMessageParser();
+  final StreamController<String> _clipboardController =
+      StreamController<String>.broadcast();
+  final Map<int, Completer<void>> _clipboardAcks = <int, Completer<void>>{};
+  late final StreamSubscription<Uint8List> _subscription;
   Future<void> _writes = Future<void>.value();
+  int _nextClipboardSequence = 1;
   int _width = 0;
   int _height = 0;
 
@@ -480,10 +495,65 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
   Future<void> sendText(String text) =>
       _send(ScrcpyControlMessageSerializer.text(text));
 
+  @override
+  Stream<String> get clipboardChanges => _clipboardController.stream;
+
+  @override
+  Future<void> requestClipboard({ScrcpyCopyKey copyKey = ScrcpyCopyKey.none}) =>
+      _send(ScrcpyControlMessageSerializer.getClipboard(copyKey: copyKey));
+
+  @override
+  Future<void> setClipboard(String text, {bool paste = false}) async {
+    final sequence = _nextClipboardSequence++;
+    final acknowledgement = Completer<void>();
+    _clipboardAcks[sequence] = acknowledgement;
+    try {
+      await _send(
+        ScrcpyControlMessageSerializer.setClipboard(
+          text: text,
+          sequence: sequence,
+          paste: paste,
+        ),
+      );
+      await acknowledgement.future.timeout(const Duration(seconds: 3));
+    } finally {
+      _clipboardAcks.remove(sequence);
+    }
+  }
+
+  void _onDeviceData(Uint8List data) {
+    try {
+      for (final message in _deviceParser.add(data)) {
+        switch (message) {
+          case ScrcpyClipboardMessage(:final text):
+            _clipboardController.add(text);
+          case ScrcpyClipboardAckMessage(:final sequence):
+            _clipboardAcks.remove(sequence)?.complete();
+          case ScrcpyUhidOutputMessage():
+            break;
+        }
+      }
+    } catch (error, stackTrace) {
+      _clipboardController.addError(error, stackTrace);
+    }
+  }
+
+  void _onDeviceDone() {
+    for (final acknowledgement in _clipboardAcks.values) {
+      if (!acknowledgement.isCompleted) {
+        acknowledgement.completeError(
+          StateError('scrcpy control socket closed before clipboard ACK'),
+        );
+      }
+    }
+  }
+
   Future<void> close() async {
     try {
       await _writes;
     } finally {
+      await _subscription.cancel();
+      await _clipboardController.close();
       await _socket.close();
     }
   }

@@ -5,6 +5,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
 final class _FakeVideoConnection implements ScrcpyVideoConnection {
+  _FakeVideoConnection({this.codecId = ScrcpyVideoCodecInfo.h264});
+
+  final int codecId;
   final sessionsController = StreamController<ScrcpyVideoCodecInfo>();
   final packetsController = StreamController<ScrcpyVideoPacket>();
   bool closed = false;
@@ -17,11 +20,8 @@ final class _FakeVideoConnection implements ScrcpyVideoConnection {
   Future<void> get done => doneCompleter.future;
 
   @override
-  Future<ScrcpyVideoCodecInfo> get codec async => const ScrcpyVideoCodecInfo(
-    codecId: ScrcpyVideoCodecInfo.h264,
-    width: 1080,
-    height: 1920,
-  );
+  Future<ScrcpyVideoCodecInfo> get codec async =>
+      ScrcpyVideoCodecInfo(codecId: codecId, width: 1080, height: 1920);
 
   @override
   ScrcpyVideoConnectionInfo get info => const ScrcpyVideoConnectionInfo(
@@ -51,6 +51,26 @@ final class _FakeVideoConnection implements ScrcpyVideoConnection {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('rejects codecs unsupported by the Windows native backend', () async {
+    final connection = _FakeVideoConnection(codecId: ScrcpyVideoCodecInfo.h265);
+    final controller = createNativeScrcpyVideoController(connection);
+
+    await expectLater(
+      controller.start(),
+      throwsA(
+        isA<ScrcpyException>().having(
+          (error) => error.code,
+          'code',
+          ScrcpyErrorCode.unsupportedCapability,
+        ),
+      ),
+    );
+
+    expect(connection.closed, isTrue);
+    expect(controller.value.status, ScrcpyVideoStatus.error);
+    controller.dispose();
+  });
 
   test(
     'recreates the native texture when scrcpy session size changes',

@@ -4,6 +4,27 @@ import 'package:flutter/widgets.dart';
 
 enum ScrcpyPointerAction { down, move, up, cancel, hover, scroll }
 
+enum ScrcpyCopyKey { none, copy, cut }
+
+abstract final class ScrcpyAndroidKeyCode {
+  static const back = 4;
+  static const home = 3;
+  static const dpadUp = 19;
+  static const dpadDown = 20;
+  static const dpadLeft = 21;
+  static const dpadRight = 22;
+  static const volumeUp = 24;
+  static const volumeDown = 25;
+  static const power = 26;
+  static const enter = 66;
+  static const backspace = 67;
+  static const tab = 61;
+  static const space = 62;
+  static const forwardDelete = 112;
+  static const appSwitch = 187;
+  static const wakeUp = 224;
+}
+
 final class ScrcpyPointerEvent {
   const ScrcpyPointerEvent({
     required this.pointerId,
@@ -34,14 +55,25 @@ final class ScrcpyCoordinateMapper {
     BoxFit fit = BoxFit.contain,
     Alignment alignment = Alignment.center,
   }) {
-    if (widgetSize.isEmpty || videoSize.isEmpty) return null;
+    if (widgetSize.isEmpty ||
+        videoSize.isEmpty ||
+        !widgetSize.width.isFinite ||
+        !widgetSize.height.isFinite ||
+        !videoSize.width.isFinite ||
+        !videoSize.height.isFinite ||
+        !localPosition.dx.isFinite ||
+        !localPosition.dy.isFinite) {
+      return null;
+    }
     final fitted = applyBoxFit(fit, videoSize, widgetSize);
     final source = alignment.inscribe(fitted.source, Offset.zero & videoSize);
     final destination = alignment.inscribe(
       fitted.destination,
       Offset.zero & widgetSize,
     );
-    if (!destination.contains(localPosition)) return null;
+    if (destination.isEmpty || !destination.contains(localPosition)) {
+      return null;
+    }
     final dx = (localPosition.dx - destination.left) / destination.width;
     final dy = (localPosition.dy - destination.top) / destination.height;
     return Offset(
@@ -57,6 +89,119 @@ abstract interface class ScrcpyInputController {
   Future<void> sendKey({required int keyCode, bool down = true});
 
   Future<void> sendText(String text);
+
+  /// Device clipboard changes emitted by scrcpy clipboard autosync and
+  /// explicit [requestClipboard] calls.
+  Stream<String> get clipboardChanges;
+
+  Future<void> requestClipboard({ScrcpyCopyKey copyKey = ScrcpyCopyKey.none});
+
+  /// Updates the Android clipboard and waits for the server acknowledgement.
+  Future<void> setClipboard(String text, {bool paste = false});
+}
+
+/// Sends synthetic multi-pointer gestures through a scrcpy control channel.
+///
+/// Coordinates and spans are normalized to the current video size, so the
+/// gesture remains valid after rotation or host window resizing.
+final class ScrcpyGestureSimulator {
+  const ScrcpyGestureSimulator(this.controller);
+
+  final ScrcpyInputController controller;
+
+  Future<void> pinch({
+    Offset center = const Offset(0.5, 0.5),
+    double startSpan = 0.2,
+    double endSpan = 0.5,
+    Offset axis = const Offset(1, 0),
+    int steps = 8,
+    Duration duration = const Duration(milliseconds: 240),
+    int firstPointerId = 0x7ffffffffffffff0,
+    int secondPointerId = 0x7ffffffffffffff1,
+  }) async {
+    if (steps < 1) throw ArgumentError.value(steps, 'steps', 'must be >= 1');
+    if (duration.isNegative) {
+      throw ArgumentError.value(duration, 'duration', 'must not be negative');
+    }
+    if (firstPointerId == secondPointerId) {
+      throw ArgumentError('Multi-touch pointer IDs must be different');
+    }
+    final axisLength = axis.distance;
+    if (!axisLength.isFinite || axisLength == 0) {
+      throw ArgumentError.value(axis, 'axis', 'must be finite and non-zero');
+    }
+    final unitAxis = axis / axisLength;
+    final start = _pinchPoints(center, unitAxis, startSpan);
+    final end = _pinchPoints(center, unitAxis, endSpan);
+    if (!_isNormalized(start.$1) ||
+        !_isNormalized(start.$2) ||
+        !_isNormalized(end.$1) ||
+        !_isNormalized(end.$2)) {
+      throw ArgumentError('The pinch path must remain inside the video');
+    }
+
+    var firstDown = false;
+    var secondDown = false;
+    try {
+      await _send(firstPointerId, ScrcpyPointerAction.down, start.$1);
+      firstDown = true;
+      await _send(secondPointerId, ScrcpyPointerAction.down, start.$2);
+      secondDown = true;
+      final stepDelay = duration ~/ steps;
+      for (var step = 1; step <= steps; step++) {
+        final progress = step / steps;
+        await _send(
+          firstPointerId,
+          ScrcpyPointerAction.move,
+          Offset.lerp(start.$1, end.$1, progress)!,
+        );
+        await _send(
+          secondPointerId,
+          ScrcpyPointerAction.move,
+          Offset.lerp(start.$2, end.$2, progress)!,
+        );
+        if (stepDelay > Duration.zero) await Future<void>.delayed(stepDelay);
+      }
+    } finally {
+      if (secondDown) {
+        await _send(secondPointerId, ScrcpyPointerAction.up, end.$2);
+      }
+      if (firstDown) {
+        await _send(firstPointerId, ScrcpyPointerAction.up, end.$1);
+      }
+    }
+  }
+
+  Future<void> _send(int pointerId, ScrcpyPointerAction action, Offset point) =>
+      controller.sendPointer(
+        ScrcpyPointerEvent(
+          pointerId: pointerId,
+          action: action,
+          normalizedX: point.dx,
+          normalizedY: point.dy,
+          buttons: action == ScrcpyPointerAction.up ? 0 : 1,
+        ),
+      );
+
+  static (Offset, Offset) _pinchPoints(
+    Offset center,
+    Offset axis,
+    double span,
+  ) {
+    if (!span.isFinite || span < 0) {
+      throw ArgumentError.value(span, 'span', 'must be finite and >= 0');
+    }
+    final radius = axis * (span / 2);
+    return (center - radius, center + radius);
+  }
+
+  static bool _isNormalized(Offset point) =>
+      point.dx.isFinite &&
+      point.dy.isFinite &&
+      point.dx >= 0 &&
+      point.dx <= 1 &&
+      point.dy >= 0 &&
+      point.dy <= 1;
 }
 
 /// Captures Flutter pointer events above a video surface. Coordinates are
@@ -185,20 +330,20 @@ final class ScrcpyInputLayer extends StatelessWidget {
 
 int? _androidKeyCode(LogicalKeyboardKey key) {
   final fixed = <LogicalKeyboardKey, int>{
-    LogicalKeyboardKey.escape: 4,
-    LogicalKeyboardKey.home: 3,
-    LogicalKeyboardKey.enter: 66,
-    LogicalKeyboardKey.numpadEnter: 66,
-    LogicalKeyboardKey.backspace: 67,
-    LogicalKeyboardKey.delete: 112,
-    LogicalKeyboardKey.tab: 61,
-    LogicalKeyboardKey.space: 62,
-    LogicalKeyboardKey.arrowUp: 19,
-    LogicalKeyboardKey.arrowDown: 20,
-    LogicalKeyboardKey.arrowLeft: 21,
-    LogicalKeyboardKey.arrowRight: 22,
-    LogicalKeyboardKey.audioVolumeUp: 24,
-    LogicalKeyboardKey.audioVolumeDown: 25,
+    LogicalKeyboardKey.escape: ScrcpyAndroidKeyCode.back,
+    LogicalKeyboardKey.home: ScrcpyAndroidKeyCode.home,
+    LogicalKeyboardKey.enter: ScrcpyAndroidKeyCode.enter,
+    LogicalKeyboardKey.numpadEnter: ScrcpyAndroidKeyCode.enter,
+    LogicalKeyboardKey.backspace: ScrcpyAndroidKeyCode.backspace,
+    LogicalKeyboardKey.delete: ScrcpyAndroidKeyCode.forwardDelete,
+    LogicalKeyboardKey.tab: ScrcpyAndroidKeyCode.tab,
+    LogicalKeyboardKey.space: ScrcpyAndroidKeyCode.space,
+    LogicalKeyboardKey.arrowUp: ScrcpyAndroidKeyCode.dpadUp,
+    LogicalKeyboardKey.arrowDown: ScrcpyAndroidKeyCode.dpadDown,
+    LogicalKeyboardKey.arrowLeft: ScrcpyAndroidKeyCode.dpadLeft,
+    LogicalKeyboardKey.arrowRight: ScrcpyAndroidKeyCode.dpadRight,
+    LogicalKeyboardKey.audioVolumeUp: ScrcpyAndroidKeyCode.volumeUp,
+    LogicalKeyboardKey.audioVolumeDown: ScrcpyAndroidKeyCode.volumeDown,
   };
   final known = fixed[key];
   if (known != null) return known;

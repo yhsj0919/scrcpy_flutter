@@ -4,6 +4,41 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
 void main() {
+  test('accepts all scrcpy 4.1 video codec identifiers', () {
+    for (final codecId in <int>[
+      ScrcpyVideoCodecInfo.h264,
+      ScrcpyVideoCodecInfo.h265,
+      ScrcpyVideoCodecInfo.av1,
+    ]) {
+      ScrcpyVideoCodecInfo? codec;
+      final parser = ScrcpyVideoPacketParser(
+        onCodec: (value) => codec = value,
+        onPacket: (_) {},
+      );
+      parser.add(
+        (BytesBuilder()
+              ..addByte(0)
+              ..add(_u32(codecId))
+              ..add(_session(720, 1280)))
+            .takeBytes(),
+      );
+      expect(codec?.codecId, codecId);
+    }
+  });
+
+  test('rejects an unknown scrcpy video codec identifier', () {
+    final parser = ScrcpyVideoPacketParser(onCodec: (_) {}, onPacket: (_) {});
+    expect(
+      () => parser.add(
+        (BytesBuilder()
+              ..addByte(0)
+              ..add(_u32(0x12345678)))
+            .takeBytes(),
+      ),
+      throwsFormatException,
+    );
+  });
+
   test('parses arbitrarily split scrcpy codec metadata and video packets', () {
     ScrcpyVideoCodecInfo? codec;
     final packets = <ScrcpyVideoPacket>[];

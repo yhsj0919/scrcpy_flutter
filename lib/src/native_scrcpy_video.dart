@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'scrcpy_error.dart';
 import 'scrcpy_video.dart';
 import 'scrcpy_video_connection.dart';
 import 'scrcpy_video_packet.dart';
@@ -44,6 +45,13 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
     _setValue(const ScrcpyVideoState(status: ScrcpyVideoStatus.buffering));
     try {
       final codec = await _connection.codec.timeout(const Duration(seconds: 5));
+      if (!codec.isH264) {
+        throw ScrcpyException(
+          ScrcpyErrorCode.unsupportedCapability,
+          'The Windows native video backend currently supports H.264 only; '
+          'received codec 0x${codec.codecId.toRadixString(16)}',
+        );
+      }
       final textureId = await _channel.invokeMethod<int>(
         'create',
         <String, Object>{

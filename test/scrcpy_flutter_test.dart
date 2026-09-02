@@ -152,6 +152,21 @@ class RepeatingVideoConnector implements ScrcpyVideoConnector {
   }
 }
 
+class FirstThenFailVideoConnector implements ScrcpyVideoConnector {
+  var calls = 0;
+  final first = FakeSessionVideoConnection();
+
+  @override
+  Future<ScrcpyVideoConnection> connect(
+    ScrcpySessionConfiguration configuration, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    calls++;
+    if (calls == 1) return first;
+    throw StateError('injected reconnect failure');
+  }
+}
+
 class FakeSessionVideoConnection implements ScrcpyVideoConnection {
   final doneCompleter = Completer<void>();
   var closeCalls = 0;
@@ -199,6 +214,31 @@ class FakeSessionVideoConnection implements ScrcpyVideoConnection {
 }
 
 void main() {
+  test('video options validate quality and encoder selections', () {
+    const valid = ScrcpyVideoOptions(
+      maxSize: 1280,
+      maxFps: 30,
+      bitRate: 4000000,
+      codec: ScrcpyVideoCodec.h265,
+      encoder: 'c2.android.hevc.encoder',
+    );
+    expect(valid.validate, returnsNormally);
+    expect(valid.codec.serverName, 'h265');
+
+    expect(
+      () => const ScrcpyVideoOptions(maxFps: 0).validate(),
+      throwsRangeError,
+    );
+    expect(
+      () => const ScrcpyVideoOptions(bitRate: 99999).validate(),
+      throwsRangeError,
+    );
+    expect(
+      () => const ScrcpyVideoOptions(encoder: 'bad encoder').validate(),
+      throwsArgumentError,
+    );
+  });
+
   test(
     'ScrcpyClient discovers devices through the injected ADB boundary',
     () async {
@@ -353,6 +393,111 @@ void main() {
     expect(session.state.value, ScrcpySessionState.disconnected);
     expect(connection.closeCalls, 1);
     session.dispose();
+  });
+
+  test(
+    'ScrcpySession reconnects once after an unexpected disconnect',
+    () async {
+      final connector = RepeatingVideoConnector();
+      final session = ScrcpySession(
+        adbDeviceService: FakeAdbClient(),
+        configuration: const ScrcpySessionConfiguration(
+          deviceSerial: 'test-device',
+          reconnectPolicy: ScrcpyReconnectPolicy(
+            maxAttempts: 3,
+            initialDelay: Duration.zero,
+            maxDelay: Duration.zero,
+          ),
+        ),
+        videoConnector: connector,
+      );
+
+      final first = await session.start();
+      final replacementFuture = session.reconnectedConnections.first;
+      (first as FakeSessionVideoConnection).disconnect();
+      final replacement = await replacementFuture.timeout(
+        const Duration(seconds: 1),
+      );
+
+      expect(replacement, same(connector.connections[1]));
+      expect(connector.connections, hasLength(2));
+      expect(session.state.value, ScrcpySessionState.streaming);
+      await session.stop();
+      session.dispose();
+    },
+  );
+
+  test(
+    'user stop cancels pending reconnect without a duplicate session',
+    () async {
+      final connector = RepeatingVideoConnector();
+      final session = ScrcpySession(
+        adbDeviceService: FakeAdbClient(),
+        configuration: const ScrcpySessionConfiguration(
+          deviceSerial: 'test-device',
+          reconnectPolicy: ScrcpyReconnectPolicy(
+            maxAttempts: 3,
+            initialDelay: Duration(milliseconds: 100),
+            maxDelay: Duration(milliseconds: 100),
+          ),
+        ),
+        videoConnector: connector,
+      );
+
+      final first = await session.start() as FakeSessionVideoConnection;
+      first.disconnect();
+      await Future<void>.delayed(Duration.zero);
+      expect(session.state.value, ScrcpySessionState.reconnecting);
+      await session.stop();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(connector.connections, hasLength(1));
+      expect(session.state.value, ScrcpySessionState.ready);
+      session.dispose();
+    },
+  );
+
+  test('reconnect exhaustion reports one terminal error', () async {
+    final connector = FirstThenFailVideoConnector();
+    final session = ScrcpySession(
+      adbDeviceService: FakeAdbClient(),
+      configuration: const ScrcpySessionConfiguration(
+        deviceSerial: 'test-device',
+        reconnectPolicy: ScrcpyReconnectPolicy(
+          maxAttempts: 2,
+          initialDelay: Duration.zero,
+          maxDelay: Duration.zero,
+        ),
+      ),
+      videoConnector: connector,
+    );
+
+    await session.start();
+    final terminalError = session.reconnectedConnections.first;
+    connector.first.disconnect();
+
+    await expectLater(terminalError, throwsStateError);
+    expect(connector.calls, 3, reason: 'initial start plus two retries');
+    expect(session.state.value, ScrcpySessionState.error);
+    await session.stop();
+    session.dispose();
+  });
+
+  test('reconnect policy validates its retry bounds and backoff', () {
+    const policy = ScrcpyReconnectPolicy(
+      maxAttempts: 4,
+      initialDelay: Duration(milliseconds: 100),
+      maxDelay: Duration(milliseconds: 350),
+      multiplier: 2,
+    );
+    expect(policy.validate, returnsNormally);
+    expect(policy.delayForAttempt(1), const Duration(milliseconds: 100));
+    expect(policy.delayForAttempt(2), const Duration(milliseconds: 200));
+    expect(policy.delayForAttempt(3), const Duration(milliseconds: 350));
+    expect(
+      () => const ScrcpyReconnectPolicy(maxAttempts: -1).validate(),
+      throwsRangeError,
+    );
   });
 
   test(

@@ -112,4 +112,57 @@ void main() {
       ],
     );
   });
+
+  test('serializes scrcpy 4.1 clipboard control messages', () {
+    expect(
+      ScrcpyControlMessageSerializer.getClipboard(copyKey: ScrcpyCopyKey.cut),
+      <int>[8, 2],
+    );
+    expect(
+      ScrcpyControlMessageSerializer.setClipboard(
+        text: 'aé',
+        sequence: 0x0102030405060708,
+        paste: true,
+      ),
+      <int>[9, 1, 2, 3, 4, 5, 6, 7, 8, 1, 0, 0, 0, 3, 0x61, 0xc3, 0xa9],
+    );
+  });
+
+  test('parses fragmented and coalesced device clipboard messages', () {
+    final parser = ScrcpyDeviceMessageParser();
+
+    expect(parser.add(<int>[0, 0, 0]), isEmpty);
+    final messages = parser.add(<int>[
+      0,
+      3,
+      0x61,
+      0xc3,
+      0xa9,
+      1,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+    ]);
+
+    expect(messages, hasLength(2));
+    expect((messages[0] as ScrcpyClipboardMessage).text, 'aé');
+    expect(
+      (messages[1] as ScrcpyClipboardAckMessage).sequence,
+      0x0102030405060708,
+    );
+  });
+
+  test('rejects oversized and unknown device messages', () {
+    final oversized = ScrcpyDeviceMessageParser();
+    expect(() => oversized.add(<int>[0, 0, 4, 0, 0]), throwsFormatException);
+    expect(
+      () => ScrcpyDeviceMessageParser().add(<int>[99]),
+      throwsFormatException,
+    );
+  });
 }

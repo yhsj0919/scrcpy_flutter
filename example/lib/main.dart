@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
@@ -29,6 +31,8 @@ class DeviceDiscoveryPage extends StatefulWidget {
 }
 
 class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
+  late final ScrcpyDeviceMonitor _deviceMonitor;
+  StreamSubscription<ScrcpyDeviceSnapshot>? _deviceSubscription;
   List<AdbDevice> _devices = const <AdbDevice>[];
   Object? _error;
   bool _loading = false;
@@ -38,7 +42,44 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
   @override
   void initState() {
     super.initState();
-    _refresh();
+    _deviceMonitor = ScrcpyDeviceMonitor(widget.client);
+    _deviceSubscription = _deviceMonitor.snapshots.listen(
+      _applyDeviceSnapshot,
+      onError: (Object error) {
+        if (mounted) setState(() => _error = error);
+      },
+    );
+    _startMonitor();
+  }
+
+  Future<void> _startMonitor() async {
+    setState(() => _loading = true);
+    try {
+      await _deviceMonitor.start();
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _applyDeviceSnapshot(ScrcpyDeviceSnapshot snapshot) {
+    if (!mounted) return;
+    final hadDevices = _lastUpdated != null;
+    setState(() {
+      _devices = snapshot.devices;
+      _lastUpdated = snapshot.observedAt;
+      _error = null;
+    });
+    if (hadDevices &&
+        (snapshot.added.isNotEmpty ||
+            snapshot.removed.isNotEmpty ||
+            snapshot.changed.isNotEmpty)) {
+      _showMessage(
+        '设备变化：+${snapshot.added.length} '
+        '-${snapshot.removed.length} 状态${snapshot.changed.length}',
+      );
+    }
   }
 
   Future<void> _refresh() async {
@@ -48,12 +89,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       _error = null;
     });
     try {
-      final devices = await widget.client.discoverDevices();
-      if (!mounted) return;
-      setState(() {
-        _devices = devices;
-        _lastUpdated = DateTime.now();
-      });
+      await _deviceMonitor.refresh();
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error);
@@ -162,13 +198,14 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
   }
 
   Future<void> _refreshAfterConnectionChange() async {
-    final devices = await widget.client.discoverDevices();
-    if (mounted) {
-      setState(() {
-        _devices = devices;
-        _lastUpdated = DateTime.now();
-      });
-    }
+    await _deviceMonitor.refresh();
+  }
+
+  @override
+  void dispose() {
+    unawaited(_deviceSubscription?.cancel());
+    unawaited(_deviceMonitor.close());
+    super.dispose();
   }
 
   void _showMessage(String message) {
@@ -184,6 +221,22 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       appBar: AppBar(
         title: const Text('scrcpy_flutter 设备验证'),
         actions: <Widget>[
+          IconButton(
+            tooltip: '批量应用管理',
+            onPressed: _devices.any((device) => device.isReady)
+                ? () => Navigator.of(context).push<void>(
+                    MaterialPageRoute<void>(
+                      builder: (_) => BatchPackagePage(
+                        client: widget.client,
+                        devices: _devices
+                            .where((device) => device.isReady)
+                            .toList(),
+                      ),
+                    ),
+                  )
+                : null,
+            icon: const Icon(Icons.apps),
+          ),
           TextButton.icon(
             onPressed: _changingConnection ? null : _connect,
             icon: const Icon(Icons.add_link),
@@ -641,18 +694,37 @@ class DeviceSessionPage extends StatefulWidget {
 
 class _DeviceSessionPageState extends State<DeviceSessionPage> {
   late ScrcpySession _session;
+  ScrcpyDeviceStatusMonitor? _statusMonitor;
+  StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
+  StreamSubscription<ScrcpyDeviceStatus>? _statusSubscription;
   Object? _error;
   ScrcpyVideoController? _videoController;
   ScrcpyInputController? _inputController;
+  ScrcpyClipboardSynchronizer? _clipboardSync;
+  ScrcpyVideoConnectionInfo? _connectionInfo;
+  ScrcpyVideoCodecInfo? _activeCodec;
+  int _reconnectCount = 0;
+  bool _clipboardSyncEnabled = false;
   bool _startingVideo = false;
   int _maxSize = 1280;
   int _maxFps = 30;
   int _bitRateMbps = 4;
+  ScrcpyVideoCodec _videoCodec = ScrcpyVideoCodec.h264;
+  String? _videoEncoder;
+  ScrcpyVideoCapabilities? _videoCapabilities;
+  ScrcpyDeviceDetails? _deviceDetails;
+  ScrcpyDeviceStatus? _deviceStatus;
+  int _statusIntervalSeconds = 5;
+  int _statusMonitorGeneration = 0;
+  bool _loadingDeviceDetails = true;
+  final _textInputController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _session = _createSession();
+    unawaited(_restartStatusMonitor(_statusIntervalSeconds));
+    _bindReconnects();
     _prepare();
   }
 
@@ -660,28 +732,91 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     ScrcpySessionConfiguration(
       deviceSerial: widget.device.serial,
       controlEnabled: true,
+      reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
       video: ScrcpyVideoOptions(
         maxSize: _maxSize,
         maxFps: _maxFps,
         bitRate: _bitRateMbps * 1000 * 1000,
+        codec: _videoCodec,
+        encoder: _videoEncoder,
       ),
     ),
   );
 
+  Future<void> _restartStatusMonitor(int seconds) async {
+    final generation = ++_statusMonitorGeneration;
+    await _statusSubscription?.cancel();
+    await _statusMonitor?.close();
+    if (!mounted || generation != _statusMonitorGeneration) return;
+    final monitor = widget.client.createDeviceStatusMonitor(
+      widget.device.serial,
+      interval: Duration(seconds: seconds),
+    );
+    _statusMonitor = monitor;
+    _statusSubscription = monitor.statuses.listen((status) {
+      if (mounted && identical(_statusMonitor, monitor)) {
+        setState(() => _deviceStatus = status);
+      }
+    });
+    setState(() {
+      _statusIntervalSeconds = seconds;
+      _deviceStatus = null;
+    });
+    try {
+      await monitor.start();
+    } catch (error) {
+      if (mounted && identical(_statusMonitor, monitor)) {
+        setState(() => _error = error);
+      }
+    }
+  }
+
   void _replaceSession(void Function() updateOptions) {
+    unawaited(_reconnectSubscription?.cancel());
     _session.dispose();
     setState(() {
       updateOptions();
       _session = _createSession();
     });
+    _bindReconnects();
+  }
+
+  void _bindReconnects() {
+    _reconnectSubscription = _session.reconnectedConnections.listen(
+      (connection) =>
+          unawaited(_attachConnection(connection, isReconnect: true)),
+      onError: (Object error) {
+        if (mounted) setState(() => _error = error);
+      },
+    );
   }
 
   Future<void> _prepare() async {
     setState(() => _error = null);
     try {
       await _session.prepare();
+      final details = await widget.client.getDeviceDetails(widget.device);
+      if (mounted) {
+        setState(() {
+          _deviceDetails = details;
+          _loadingDeviceDetails = false;
+        });
+      }
+      try {
+        final capabilities = await widget.client.probeVideoCapabilities(
+          widget.device.serial,
+        );
+        if (mounted) setState(() => _videoCapabilities = capabilities);
+      } catch (_) {
+        // Device details and H.264 auto-selection remain usable without a probe.
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = error);
+      if (mounted) {
+        setState(() {
+          _loadingDeviceDetails = false;
+          _error = error;
+        });
+      }
     }
   }
 
@@ -693,16 +828,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     });
     try {
       final connection = await _session.start();
-      final controller = createNativeScrcpyVideoController(connection);
-      if (!mounted) {
-        controller.dispose();
-        return;
-      }
-      setState(() {
-        _videoController = controller;
-        _inputController = connection.input;
-      });
-      await controller.start();
+      await _attachConnection(connection);
     } catch (error) {
       if (mounted) setState(() => _error = error);
     } finally {
@@ -710,9 +836,52 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     }
   }
 
+  Future<void> _attachConnection(
+    ScrcpyVideoConnection connection, {
+    bool isReconnect = false,
+  }) async {
+    final previousVideo = _videoController;
+    final previousClipboard = _clipboardSync;
+    await previousClipboard?.stop();
+    if (previousVideo != null) {
+      try {
+        await previousVideo.stop();
+      } catch (_) {
+        // An unexpected disconnect may already have closed the old transport.
+      }
+      previousVideo.dispose();
+    }
+    final controller = createNativeScrcpyVideoController(connection);
+    final codec = await connection.codec;
+    if (!mounted) {
+      controller.dispose();
+      await connection.close();
+      return;
+    }
+    setState(() {
+      _videoController = controller;
+      _inputController = connection.input;
+      _connectionInfo = connection.info;
+      _activeCodec = codec;
+      if (isReconnect) _reconnectCount++;
+      _clipboardSync = connection.input == null
+          ? null
+          : ScrcpyClipboardSynchronizer(
+              connection.input!,
+              onError: (error, _) {
+                if (mounted) setState(() => _error = error);
+              },
+            );
+      _clipboardSyncEnabled = false;
+      _error = null;
+    });
+    await controller.start();
+  }
+
   Future<void> _stopVideo() async {
     final controller = _videoController;
     if (controller == null) return;
+    await _clipboardSync?.stop();
     await _session.stop();
     await controller.stop();
     controller.dispose();
@@ -720,12 +889,88 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
       setState(() {
         _videoController = null;
         _inputController = null;
+        _clipboardSync = null;
+        _clipboardSyncEnabled = false;
+        _connectionInfo = null;
+        _activeCodec = null;
+        _reconnectCount = 0;
       });
+    }
+  }
+
+  Future<void> _sendAndroidKey(int keyCode) async {
+    final input = _inputController;
+    if (input == null) return;
+    try {
+      await input.sendKey(keyCode: keyCode);
+      await input.sendKey(keyCode: keyCode, down: false);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _sendText() async {
+    final input = _inputController;
+    final text = _textInputController.text;
+    if (input == null || text.isEmpty) return;
+    try {
+      await input.sendText(text);
+      _textInputController.clear();
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _pinch({required bool zoomIn}) async {
+    final input = _inputController;
+    if (input == null) return;
+    try {
+      await ScrcpyGestureSimulator(input)
+          .pinch(startSpan: zoomIn ? 0.18 : 0.5, endSpan: zoomIn ? 0.5 : 0.18);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _toggleClipboardSync(bool enabled) async {
+    final synchronizer = _clipboardSync;
+    if (synchronizer == null) return;
+    try {
+      if (enabled) {
+        await synchronizer.start();
+      } else {
+        await synchronizer.stop();
+      }
+      if (mounted) setState(() => _clipboardSyncEnabled = enabled);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _pushClipboard({bool paste = false}) async {
+    try {
+      await _clipboardSync?.pushHostToDevice(paste: paste);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _pullClipboard(ScrcpyCopyKey copyKey) async {
+    try {
+      await _clipboardSync?.pullDeviceToHost(copyKey: copyKey);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
     }
   }
 
   @override
   void dispose() {
+    _statusMonitorGeneration++;
+    unawaited(_reconnectSubscription?.cancel());
+    unawaited(_statusSubscription?.cancel());
+    unawaited(_statusMonitor?.close());
+    unawaited(_clipboardSync?.stop());
+    _textInputController.dispose();
     _videoController?.dispose();
     _session.dispose();
     super.dispose();
@@ -733,7 +978,23 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(widget.device.model ?? '设备详情')),
+    appBar: AppBar(
+      title: Text(widget.device.model ?? '设备详情'),
+      actions: <Widget>[
+        IconButton(
+          tooltip: '文件管理',
+          onPressed: () => Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => DeviceFileManagerPage(
+                client: widget.client,
+                device: widget.device,
+              ),
+            ),
+          ),
+          icon: const Icon(Icons.folder),
+        ),
+      ],
+    ),
     body: Padding(
       padding: const EdgeInsets.all(20),
       child: ListView(
@@ -769,6 +1030,12 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
           const SizedBox(height: 12),
           Text('设备：${widget.device.redactedSerial}'),
           const SizedBox(height: 12),
+          _buildDeviceDetailsCard(),
+          if (_deviceStatus case final status?) ...<Widget>[
+            const SizedBox(height: 12),
+            _buildDeviceStatusCard(status),
+          ],
+          const SizedBox(height: 12),
           Wrap(
             spacing: 12,
             runSpacing: 8,
@@ -776,6 +1043,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
               SizedBox(
                 width: 150,
                 child: DropdownButtonFormField<int>(
+                  isExpanded: true,
                   initialValue: _maxSize,
                   decoration: const InputDecoration(labelText: '最大尺寸'),
                   items: const <int>[720, 1080, 1280, 1600, 1920]
@@ -794,6 +1062,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
               SizedBox(
                 width: 130,
                 child: DropdownButtonFormField<int>(
+                  isExpanded: true,
                   initialValue: _maxFps,
                   decoration: const InputDecoration(labelText: '最大 FPS'),
                   items: const <int>[15, 30, 45, 60]
@@ -812,6 +1081,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
               SizedBox(
                 width: 140,
                 child: DropdownButtonFormField<int>(
+                  isExpanded: true,
                   initialValue: _bitRateMbps,
                   decoration: const InputDecoration(labelText: '码率 Mbps'),
                   items: const <int>[1, 2, 4, 8, 12]
@@ -824,6 +1094,78 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
                       .toList(),
                   onChanged: _videoController == null
                       ? (value) => _replaceSession(() => _bitRateMbps = value!)
+                      : null,
+                ),
+              ),
+              SizedBox(
+                width: 185,
+                child: DropdownButtonFormField<ScrcpyVideoCodec>(
+                  isExpanded: true,
+                  initialValue: _videoCodec,
+                  decoration: const InputDecoration(labelText: '视频编码'),
+                  selectedItemBuilder: (context) => ScrcpyVideoCodec.values
+                      .map(
+                        (codec) => Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            codec.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  items: ScrcpyVideoCodec.values
+                      .map(
+                        (codec) => DropdownMenuItem<ScrcpyVideoCodec>(
+                          value: codec,
+                          child: Text(
+                            '${codec.label}${ScrcpyVideoCapabilities.nativeDecoderCodecs.contains(codec) ? '' : '（本地暂不可解码）'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: _videoController == null
+                      ? (value) => _replaceSession(() {
+                          _videoCodec = value!;
+                          _videoEncoder = null;
+                        })
+                      : null,
+                ),
+              ),
+              SizedBox(
+                width: 260,
+                child: DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  initialValue: _videoEncoder ?? '',
+                  decoration: const InputDecoration(
+                    labelText: 'Android 编码器（可选）',
+                  ),
+                  items: <DropdownMenuItem<String>>[
+                    const DropdownMenuItem<String>(
+                      value: '',
+                      child: Text('自动选择'),
+                    ),
+                    for (final encoder
+                        in _videoCapabilities?.forCodec(_videoCodec) ??
+                            const <ScrcpyVideoEncoder>[])
+                      DropdownMenuItem<String>(
+                        value: encoder.name,
+                        child: Text(
+                          '${encoder.name} · ${encoder.hardware ? '硬件' : '软件'}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  onChanged: _videoController == null
+                      ? (value) => _replaceSession(
+                          () => _videoEncoder = value?.isEmpty ?? true
+                              ? null
+                              : value,
+                        )
                       : null,
                 ),
               ),
@@ -849,6 +1191,131 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
               ),
             ),
           ],
+          if (_inputController != null) ...<Widget>[
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    const Text('设备控制'),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: <Widget>[
+                        IconButton.filledTonal(
+                          tooltip: 'Back',
+                          onPressed: () =>
+                              _sendAndroidKey(ScrcpyAndroidKeyCode.back),
+                          icon: const Icon(Icons.arrow_back),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: 'Home',
+                          onPressed: () =>
+                              _sendAndroidKey(ScrcpyAndroidKeyCode.home),
+                          icon: const Icon(Icons.home),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: 'Recent Apps',
+                          onPressed: () =>
+                              _sendAndroidKey(ScrcpyAndroidKeyCode.appSwitch),
+                          icon: const Icon(Icons.view_carousel),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: 'Power',
+                          onPressed: () =>
+                              _sendAndroidKey(ScrcpyAndroidKeyCode.power),
+                          icon: const Icon(Icons.power_settings_new),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: 'Wake',
+                          onPressed: () =>
+                              _sendAndroidKey(ScrcpyAndroidKeyCode.wakeUp),
+                          icon: const Icon(Icons.wb_sunny_outlined),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: 'Volume Down',
+                          onPressed: () =>
+                              _sendAndroidKey(ScrcpyAndroidKeyCode.volumeDown),
+                          icon: const Icon(Icons.volume_down),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: 'Volume Up',
+                          onPressed: () =>
+                              _sendAndroidKey(ScrcpyAndroidKeyCode.volumeUp),
+                          icon: const Icon(Icons.volume_up),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: '双指放大',
+                          onPressed: () => _pinch(zoomIn: true),
+                          icon: const Icon(Icons.zoom_in),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: '双指缩小',
+                          onPressed: () => _pinch(zoomIn: false),
+                          icon: const Icon(Icons.zoom_out),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: TextField(
+                            controller: _textInputController,
+                            decoration: const InputDecoration(
+                              labelText: '向当前输入框发送文本',
+                            ),
+                            onSubmitted: (_) => _sendText(),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton(
+                          onPressed: _sendText,
+                          child: const Text('发送'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: <Widget>[
+                        FilterChip(
+                          label: const Text('双向剪贴板同步'),
+                          selected: _clipboardSyncEnabled,
+                          onSelected: _toggleClipboardSync,
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _pushClipboard,
+                          icon: const Icon(Icons.content_copy),
+                          label: const Text('宿主→设备'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () => _pushClipboard(paste: true),
+                          icon: const Icon(Icons.content_paste),
+                          label: const Text('发送并粘贴'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () => _pullClipboard(ScrcpyCopyKey.copy),
+                          icon: const Icon(Icons.phone_android),
+                          label: const Text('设备复制→宿主'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () => _pullClipboard(ScrcpyCopyKey.cut),
+                          icon: const Icon(Icons.content_cut),
+                          label: const Text('设备剪切→宿主'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           ValueListenableBuilder<ScrcpySessionState>(
             valueListenable: _session.state,
@@ -864,6 +1331,30 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
               ),
             ),
           ),
+          if (_connectionInfo case final info?) ...<Widget>[
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    const Text('连接诊断'),
+                    const SizedBox(height: 8),
+                    SelectableText(
+                      'SCID：${info.scid}\n'
+                      '本地转发端口：${info.localPort}\n'
+                      '视频流：${_activeCodec?.width ?? 0}×${_activeCodec?.height ?? 0} · ${_videoCodec.label}\n'
+                      'Android 编码器：${_videoEncoder ?? '自动选择'}\n'
+                      '请求参数：最大 $_maxSize · $_maxFps FPS · $_bitRateMbps Mbps\n'
+                      '渲染后端：Native Texture\n'
+                      '自动重连次数：$_reconnectCount',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           if (_error case final error?) ...<Widget>[
             const SizedBox(height: 12),
             Text(
@@ -885,4 +1376,825 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
       ),
     ),
   );
+
+  Widget _buildDeviceDetailsCard() {
+    final details = _deviceDetails;
+    if (_loadingDeviceDetails) {
+      return const Card(
+        child: ListTile(
+          leading: CircularProgressIndicator(),
+          title: Text('正在读取设备详情'),
+        ),
+      );
+    }
+    if (details == null) {
+      return const Card(
+        child: ListTile(
+          leading: Icon(Icons.info_outline),
+          title: Text('设备详情不可用'),
+        ),
+      );
+    }
+    final screen = details.screenWidth == null || details.screenHeight == null
+        ? '未知'
+        : '${details.screenWidth}×${details.screenHeight}'
+              '${details.densityDpi == null ? '' : ' · ${details.densityDpi} dpi'}';
+    final battery = details.batteryLevel == null
+        ? '未知'
+        : '${details.batteryLevel}%'
+              '${details.batteryTemperatureCelsius == null ? '' : ' · ${details.batteryTemperatureCelsius!.toStringAsFixed(1)}℃'}';
+    final storage = details.storageTotalBytes == null
+        ? '未知'
+        : '${_formatBytes(details.storageAvailableBytes)} 可用 / '
+              '${_formatBytes(details.storageTotalBytes)}';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text('设备基础详情'),
+            const SizedBox(height: 8),
+            Text(
+              '品牌：${details.brand ?? '未知'} · ${details.manufacturer ?? '未知'}',
+            ),
+            Text('型号：${details.model ?? '未知'}'),
+            Text(
+              '系统：Android ${details.androidVersion ?? '未知'} · '
+              'SDK ${details.sdkLevel ?? '未知'} · ${details.abi ?? '未知 ABI'}',
+            ),
+            Text('连接：${_connectionTypeLabel(details.connectionType)}'),
+            Text('屏幕：$screen'),
+            Text('电池：$battery'),
+            Text('存储：$storage'),
+            Text('运行时间：${_formatDuration(details.uptime)}'),
+            if (details.unavailable.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                '部分信息不可用：${details.unavailable.keys.join('、')}',
+                style: TextStyle(color: Theme.of(context).colorScheme.outline),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDeviceStatusCard(ScrcpyDeviceStatus status) {
+    final usedMemory =
+        status.memoryTotalBytes == null || status.memoryAvailableBytes == null
+        ? null
+        : status.memoryTotalBytes! - status.memoryAvailableBytes!;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Expanded(child: Text('设备运行状态')),
+                SizedBox(
+                  width: 105,
+                  child: DropdownButton<int>(
+                    isExpanded: true,
+                    value: _statusIntervalSeconds,
+                    underline: const SizedBox.shrink(),
+                    items: const <int>[2, 5, 10, 30]
+                        .map(
+                          (seconds) => DropdownMenuItem<int>(
+                            value: seconds,
+                            child: Text('$seconds 秒'),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (seconds) {
+                      if (seconds != null &&
+                          seconds != _statusIntervalSeconds) {
+                        unawaited(_restartStatusMonitor(seconds));
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '${status.observedAt.hour.toString().padLeft(2, '0')}:'
+                  '${status.observedAt.minute.toString().padLeft(2, '0')}:'
+                  '${status.observedAt.second.toString().padLeft(2, '0')}',
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'CPU：${status.cpuUsagePercent == null ? '采样中' : '${status.cpuUsagePercent!.toStringAsFixed(1)}%'}',
+            ),
+            Text(
+              '设备 GPU：${status.deviceGpuPercent == null ? '不支持' : '${status.deviceGpuPercent!.toStringAsFixed(1)}%'}'
+              '${status.deviceGpuFrequencyHz == null ? '' : ' · ${(status.deviceGpuFrequencyHz! / 1000000).toStringAsFixed(0)} MHz'}'
+              '${status.deviceGpuSource == null ? '' : ' · ${status.deviceGpuSource}'}',
+            ),
+            Text(
+              '内存：${usedMemory == null ? '未知' : _formatBytes(usedMemory)} 已用 / '
+              '${_formatBytes(status.memoryTotalBytes)}',
+            ),
+            Text(
+              '存储：${_formatBytes(status.storageAvailableBytes)} 可用 / '
+              '${_formatBytes(status.storageTotalBytes)}',
+            ),
+            Text(
+              '网络累计：↓ ${_formatBytes(status.networkReceivedBytes)} '
+              '↑ ${_formatBytes(status.networkTransmittedBytes)}',
+            ),
+            Text(
+              '电池：${status.batteryLevel ?? '未知'}%'
+              '${status.batteryTemperatureCelsius == null ? '' : ' · ${status.batteryTemperatureCelsius!.toStringAsFixed(1)}℃'}',
+            ),
+            Text('前台应用：${status.foregroundApplication ?? '未知'}'),
+            if (status.foregroundApplication != null) ...<Widget>[
+              Text(
+                '应用进程：PID ${status.foregroundApplicationPid ?? '未知'} · '
+                'CPU ${status.foregroundApplicationCpuPercent == null ? '采样中' : '${status.foregroundApplicationCpuPercent!.toStringAsFixed(1)}%'}',
+              ),
+              Text(
+                '应用内存：PSS ${_formatBytes(status.foregroundApplicationPssBytes)} · '
+                'RSS ${_formatBytes(status.foregroundApplicationRssBytes)}',
+              ),
+              Text(
+                '应用 GPU：${status.foregroundApplicationGpuPercent == null ? '不支持或采样中' : '${status.foregroundApplicationGpuPercent!.toStringAsFixed(1)}%'} · '
+                '显存 ${_formatBytes(status.foregroundApplicationGpuMemoryBytes)}',
+              ),
+            ],
+            if (status.unavailable.isNotEmpty)
+              Text(
+                '部分状态不可用：${status.unavailable.keys.join('、')}',
+                style: TextStyle(color: Theme.of(context).colorScheme.outline),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _connectionTypeLabel(AdbConnectionType type) => switch (type) {
+    AdbConnectionType.usb => 'USB',
+    AdbConnectionType.network => '网络 ADB',
+    AdbConnectionType.unknown => '未知',
+  };
+
+  static String _formatBytes(int? bytes) {
+    if (bytes == null) return '未知';
+    final gib = bytes / 1024 / 1024 / 1024;
+    return '${gib.toStringAsFixed(gib >= 10 ? 1 : 2)} GiB';
+  }
+
+  static String _formatDuration(Duration? duration) {
+    if (duration == null) return '未知';
+    final days = duration.inDays;
+    final hours = duration.inHours.remainder(24);
+    final minutes = duration.inMinutes.remainder(60);
+    return '${days > 0 ? '$days 天 ' : ''}$hours 小时 $minutes 分钟';
+  }
+}
+
+class DeviceFileManagerPage extends StatefulWidget {
+  const DeviceFileManagerPage({
+    required this.client,
+    required this.device,
+    super.key,
+  });
+
+  final ScrcpyClient client;
+  final AdbDevice device;
+
+  @override
+  State<DeviceFileManagerPage> createState() => _DeviceFileManagerPageState();
+}
+
+class _DeviceFileManagerPageState extends State<DeviceFileManagerPage> {
+  late final ScrcpyFileManager _manager;
+  var _path = '/sdcard';
+  var _entries = const <ScrcpyFileEntry>[];
+  Object? _error;
+  bool _busy = false;
+  AdbCancellationToken? _operationCancellation;
+
+  @override
+  void initState() {
+    super.initState();
+    _manager = widget.client.createFileManager(widget.device.serial);
+    unawaited(_load());
+  }
+
+  Future<void> _load([String? path]) async {
+    final destination = path ?? _path;
+    await _run((token) async {
+      final entries = await _manager.listDirectory(
+        destination,
+        cancellationToken: token,
+      );
+      if (mounted) {
+        setState(() {
+          _path = destination;
+          _entries = entries;
+        });
+      }
+    });
+  }
+
+  Future<void> _run(
+    Future<void> Function(AdbCancellationToken token) operation,
+  ) async {
+    if (_busy) return;
+    final cancellation = AdbCancellationToken();
+    setState(() {
+      _busy = true;
+      _error = null;
+      _operationCancellation = cancellation;
+    });
+    try {
+      await operation(cancellation);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _operationCancellation = null;
+        });
+      }
+    }
+  }
+
+  Future<String?> _askText({
+    required String title,
+    required String label,
+    String initial = '',
+  }) async {
+    final controller = TextEditingController(text: initial);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: InputDecoration(labelText: label),
+          onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return value?.isEmpty ?? true ? null : value;
+  }
+
+  Future<bool> _confirm(String title, String target) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(title),
+          content: SelectableText('目标：$target'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('确认'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  String _childPath(String name) => _path == '/' ? '/$name' : '$_path/$name';
+
+  Future<void> _createDirectory() async {
+    final name = await _askText(title: '新建目录', label: '目录名称');
+    if (name == null) return;
+    await _run((token) async {
+      await _manager.createDirectory(
+        _childPath(name),
+        cancellationToken: token,
+      );
+      final entries = await _manager.listDirectory(
+        _path,
+        cancellationToken: token,
+      );
+      if (mounted) setState(() => _entries = entries);
+    });
+  }
+
+  Future<void> _rename(ScrcpyFileEntry entry) async {
+    final name = await _askText(
+      title: '重命名',
+      label: '新名称',
+      initial: entry.name,
+    );
+    if (name == null || name == entry.name) return;
+    final destination = _childPath(name);
+    var overwrite = false;
+    if (await _manager.exists(destination)) {
+      overwrite = await _confirm('目标已存在，确认覆盖？', destination);
+      if (!overwrite) return;
+    }
+    await _run((token) async {
+      await _manager.rename(
+        entry.path,
+        destination,
+        overwrite: overwrite,
+        cancellationToken: token,
+      );
+      final entries = await _manager.listDirectory(
+        _path,
+        cancellationToken: token,
+      );
+      if (mounted) setState(() => _entries = entries);
+    });
+  }
+
+  Future<void> _delete(ScrcpyFileEntry entry) async {
+    if (!await _confirm('确认删除？', entry.path)) return;
+    await _run((token) async {
+      await _manager.delete(
+        entry.path,
+        recursive: entry.type == ScrcpyFileType.directory,
+        cancellationToken: token,
+      );
+      final entries = await _manager.listDirectory(
+        _path,
+        cancellationToken: token,
+      );
+      if (mounted) setState(() => _entries = entries);
+    });
+  }
+
+  Future<void> _upload() async {
+    final local = await _askText(title: '上传文件', label: 'Windows 本地绝对路径');
+    if (local == null) return;
+    final suggested = local.replaceAll('\\', '/').split('/').last;
+    final remote = await _askText(
+      title: '上传到设备',
+      label: 'Android 目标绝对路径',
+      initial: _childPath(suggested),
+    );
+    if (remote == null) return;
+    var overwrite = false;
+    if (await _manager.exists(remote)) {
+      overwrite = await _confirm('远程文件已存在，确认覆盖？', remote);
+      if (!overwrite) return;
+    }
+    await _run((token) async {
+      await _manager.push(
+        local,
+        remote,
+        overwrite: overwrite,
+        cancellationToken: token,
+      );
+      final entries = await _manager.listDirectory(
+        _path,
+        cancellationToken: token,
+      );
+      if (mounted) setState(() => _entries = entries);
+    });
+  }
+
+  Future<void> _download(ScrcpyFileEntry entry) async {
+    final local = await _askText(
+      title: '下载文件',
+      label: 'Windows 本地目标路径',
+      initial: entry.name,
+    );
+    if (local == null) return;
+    if (!await _confirm('确认下载到本地？', local)) return;
+    await _run(
+      (token) => _manager.pull(entry.path, local, cancellationToken: token),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('文件管理'),
+      actions: <Widget>[
+        IconButton(
+          tooltip: '上传文件',
+          onPressed: _busy ? null : _upload,
+          icon: const Icon(Icons.upload_file),
+        ),
+        IconButton(
+          tooltip: '新建目录',
+          onPressed: _busy ? null : _createDirectory,
+          icon: const Icon(Icons.create_new_folder),
+        ),
+        IconButton(
+          tooltip: '刷新',
+          onPressed: _busy ? null : _load,
+          icon: const Icon(Icons.refresh),
+        ),
+      ],
+    ),
+    body: Column(
+      children: <Widget>[
+        ListTile(
+          leading: IconButton(
+            tooltip: '上一级',
+            onPressed: _busy || _path == '/'
+                ? null
+                : () {
+                    final slash = _path.lastIndexOf('/');
+                    unawaited(
+                      _load(slash <= 0 ? '/' : _path.substring(0, slash)),
+                    );
+                  },
+            icon: const Icon(Icons.arrow_upward),
+          ),
+          title: SelectableText(_path),
+          trailing: _busy
+              ? TextButton.icon(
+                  onPressed: _operationCancellation?.cancel,
+                  icon: const Icon(Icons.cancel),
+                  label: const Text('取消任务'),
+                )
+              : null,
+        ),
+        if (_busy) const LinearProgressIndicator(),
+        if (_error case final error?)
+          ListTile(
+            leading: Icon(
+              Icons.error_outline,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            title: Text('$error'),
+          ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: _entries.length,
+            itemBuilder: (context, index) {
+              final entry = _entries[index];
+              final directory = entry.type == ScrcpyFileType.directory;
+              return ListTile(
+                leading: Icon(directory ? Icons.folder : Icons.description),
+                title: Text(entry.name),
+                subtitle: directory ? null : Text(_formatBytes(entry.size)),
+                onTap: directory ? () => _load(entry.path) : null,
+                trailing: PopupMenuButton<String>(
+                  enabled: !_busy,
+                  onSelected: (action) {
+                    if (action == 'download') unawaited(_download(entry));
+                    if (action == 'rename') unawaited(_rename(entry));
+                    if (action == 'delete') unawaited(_delete(entry));
+                  },
+                  itemBuilder: (_) => <PopupMenuEntry<String>>[
+                    if (!directory)
+                      const PopupMenuItem(value: 'download', child: Text('下载')),
+                    const PopupMenuItem(value: 'rename', child: Text('重命名')),
+                    const PopupMenuItem(value: 'delete', child: Text('删除')),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    ),
+  );
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KiB';
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MiB';
+  }
+}
+
+class BatchPackagePage extends StatefulWidget {
+  const BatchPackagePage({
+    required this.client,
+    required this.devices,
+    super.key,
+  });
+
+  final ScrcpyClient client;
+  final List<AdbDevice> devices;
+
+  @override
+  State<BatchPackagePage> createState() => _BatchPackagePageState();
+}
+
+class _BatchPackagePageState extends State<BatchPackagePage> {
+  final _apkController = TextEditingController();
+  final _packageController = TextEditingController();
+  final _selected = <String>{};
+  StreamSubscription<ScrcpyBatchSnapshot>? _subscription;
+  ScrcpyBatchTask? _task;
+  ScrcpyBatchSnapshot? _snapshot;
+  Object? _error;
+  int _maxConcurrency = 3;
+  bool _replaceExisting = false;
+  bool _keepData = false;
+  bool _retryOnce = false;
+
+  bool get _running => _snapshot?.isComplete == false;
+
+  @override
+  void dispose() {
+    _task?.cancel();
+    unawaited(_subscription?.cancel());
+    _apkController.dispose();
+    _packageController.dispose();
+    super.dispose();
+  }
+
+  Future<bool> _confirm(String action, String parameters) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('确认$action？'),
+          content: SelectableText(
+            '$parameters\n\n目标设备（${_selected.length} 台）：\n'
+            '${widget.devices.where((device) => _selected.contains(device.serial)).map((device) => device.redactedSerial).join('\n')}',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('开始执行'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  Future<void> _install() async {
+    final apkPath = _apkController.text.trim();
+    if (_selected.isEmpty || apkPath.isEmpty) {
+      setState(() => _error = '请选择设备并输入 APK 绝对路径');
+      return;
+    }
+    if (!await _confirm(
+      '批量安装',
+      'APK：$apkPath\n覆盖安装：${_replaceExisting ? '是' : '否'}\n'
+          '并发：$_maxConcurrency\n失败重试：${_retryOnce ? '1 次' : '不重试'}',
+    )) {
+      return;
+    }
+    final manager = widget.client.createBatchPackageManager();
+    await _startTask(
+      manager.installTask(
+        deviceSerials: _selected.toList(),
+        apkPath: apkPath,
+        replaceExisting: _replaceExisting,
+        maxConcurrency: _maxConcurrency,
+        maxAttempts: _retryOnce ? 2 : 1,
+      ),
+    );
+  }
+
+  Future<void> _uninstall() async {
+    final packageName = _packageController.text.trim();
+    if (_selected.isEmpty || packageName.isEmpty) {
+      setState(() => _error = '请选择设备并输入应用包名');
+      return;
+    }
+    if (!await _confirm(
+      '批量卸载',
+      '包名：$packageName\n保留数据：${_keepData ? '是' : '否'}\n'
+          '并发：$_maxConcurrency\n失败重试：${_retryOnce ? '1 次' : '不重试'}',
+    )) {
+      return;
+    }
+    try {
+      final manager = widget.client.createBatchPackageManager();
+      await _startTask(
+        manager.uninstallTask(
+          deviceSerials: _selected.toList(),
+          packageName: packageName,
+          keepData: _keepData,
+          maxConcurrency: _maxConcurrency,
+          maxAttempts: _retryOnce ? 2 : 1,
+        ),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _startTask(ScrcpyBatchTask task) async {
+    await _subscription?.cancel();
+    setState(() {
+      _task = task;
+      _snapshot = task.current;
+      _error = null;
+    });
+    _subscription = task.snapshots.listen((snapshot) {
+      if (mounted && identical(_task, task)) {
+        setState(() => _snapshot = snapshot);
+      }
+    });
+    try {
+      final result = await task.start();
+      if (mounted && identical(_task, task)) {
+        setState(() => _snapshot = result);
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('批量应用管理'),
+      actions: <Widget>[
+        TextButton(
+          onPressed: _running
+              ? null
+              : () => setState(() {
+                  if (_selected.length == widget.devices.length) {
+                    _selected.clear();
+                  } else {
+                    _selected.addAll(
+                      widget.devices.map((device) => device.serial),
+                    );
+                  }
+                }),
+          child: Text(
+            _selected.length == widget.devices.length ? '取消全选' : '全选',
+          ),
+        ),
+      ],
+    ),
+    body: ListView(
+      padding: const EdgeInsets.all(20),
+      children: <Widget>[
+        Text('选择设备（${_selected.length}/${widget.devices.length}）'),
+        for (final device in widget.devices)
+          CheckboxListTile(
+            value: _selected.contains(device.serial),
+            onChanged: _running
+                ? null
+                : (selected) => setState(() {
+                    if (selected ?? false) {
+                      _selected.add(device.serial);
+                    } else {
+                      _selected.remove(device.serial);
+                    }
+                  }),
+            title: Text(device.model ?? device.device ?? 'Android 设备'),
+            subtitle: Text(device.redactedSerial),
+          ),
+        const Divider(),
+        Wrap(
+          spacing: 16,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: <Widget>[
+            SizedBox(
+              width: 160,
+              child: DropdownButtonFormField<int>(
+                isExpanded: true,
+                initialValue: _maxConcurrency,
+                decoration: const InputDecoration(labelText: '最大并发数'),
+                items: const <int>[1, 2, 3, 4, 6, 8]
+                    .map(
+                      (value) =>
+                          DropdownMenuItem(value: value, child: Text('$value')),
+                    )
+                    .toList(),
+                onChanged: _running
+                    ? null
+                    : (value) => setState(() => _maxConcurrency = value!),
+              ),
+            ),
+            FilterChip(
+              label: const Text('失败重试一次'),
+              selected: _retryOnce,
+              onSelected: _running
+                  ? null
+                  : (value) => setState(() => _retryOnce = value),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _apkController,
+          enabled: !_running,
+          decoration: const InputDecoration(
+            labelText: 'APK 本地绝对路径',
+            hintText: r'C:\packages\app.apk',
+          ),
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          value: _replaceExisting,
+          onChanged: _running
+              ? null
+              : (value) => setState(() => _replaceExisting = value ?? false),
+          title: const Text('覆盖安装现有应用'),
+        ),
+        FilledButton.icon(
+          onPressed: _running ? null : _install,
+          icon: const Icon(Icons.install_mobile),
+          label: const Text('批量安装'),
+        ),
+        const SizedBox(height: 20),
+        TextField(
+          controller: _packageController,
+          enabled: !_running,
+          decoration: const InputDecoration(
+            labelText: '应用包名',
+            hintText: 'com.example.app',
+          ),
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          value: _keepData,
+          onChanged: _running
+              ? null
+              : (value) => setState(() => _keepData = value ?? false),
+          title: const Text('卸载后保留应用数据'),
+        ),
+        FilledButton.tonalIcon(
+          onPressed: _running ? null : _uninstall,
+          icon: const Icon(Icons.delete_outline),
+          label: const Text('批量卸载'),
+        ),
+        if (_running) ...<Widget>[
+          const SizedBox(height: 16),
+          LinearProgressIndicator(
+            value: _snapshot == null
+                ? null
+                : _snapshot!.items.values
+                          .where(
+                            (item) =>
+                                item.state != ScrcpyBatchItemState.queued &&
+                                item.state != ScrcpyBatchItemState.running,
+                          )
+                          .length /
+                      _snapshot!.items.length,
+          ),
+          TextButton.icon(
+            onPressed: _task?.cancel,
+            icon: const Icon(Icons.cancel),
+            label: const Text('取消全部任务'),
+          ),
+        ],
+        if (_error case final error?)
+          Text(
+            '$error',
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
+        if (_snapshot case final snapshot?) ...<Widget>[
+          const SizedBox(height: 16),
+          const Text('逐设备结果'),
+          for (final item in snapshot.items.values)
+            ListTile(
+              leading: Icon(_batchStateIcon(item.state)),
+              title: Text(
+                widget.devices
+                    .firstWhere((device) => device.serial == item.target)
+                    .redactedSerial,
+              ),
+              subtitle: Text(
+                '${_batchStateLabel(item.state)} · 尝试 ${item.attempts} 次'
+                '${item.error == null ? '' : '\n${item.error}'}',
+              ),
+            ),
+        ],
+      ],
+    ),
+  );
+
+  static String _batchStateLabel(ScrcpyBatchItemState state) => switch (state) {
+    ScrcpyBatchItemState.queued => '等待中',
+    ScrcpyBatchItemState.running => '执行中',
+    ScrcpyBatchItemState.succeeded => '成功',
+    ScrcpyBatchItemState.failed => '失败',
+    ScrcpyBatchItemState.cancelled => '已取消',
+    ScrcpyBatchItemState.timedOut => '超时',
+  };
+
+  static IconData _batchStateIcon(ScrcpyBatchItemState state) =>
+      switch (state) {
+        ScrcpyBatchItemState.queued => Icons.schedule,
+        ScrcpyBatchItemState.running => Icons.sync,
+        ScrcpyBatchItemState.succeeded => Icons.check_circle,
+        ScrcpyBatchItemState.failed => Icons.error,
+        ScrcpyBatchItemState.cancelled => Icons.cancel,
+        ScrcpyBatchItemState.timedOut => Icons.timer_off,
+      };
 }

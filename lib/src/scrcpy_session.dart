@@ -14,8 +14,68 @@ enum ScrcpySessionState {
   streaming,
   stopping,
   disconnected,
+  reconnecting,
   error,
   disposed,
+}
+
+final class ScrcpyReconnectPolicy {
+  const ScrcpyReconnectPolicy({
+    this.maxAttempts = 0,
+    this.initialDelay = const Duration(seconds: 1),
+    this.maxDelay = const Duration(seconds: 8),
+    this.multiplier = 2,
+  });
+
+  final int maxAttempts;
+  final Duration initialDelay;
+  final Duration maxDelay;
+  final double multiplier;
+
+  bool get enabled => maxAttempts > 0;
+
+  void validate() {
+    if (maxAttempts < 0) {
+      throw RangeError.value(maxAttempts, 'maxAttempts', 'must be >= 0');
+    }
+    if (initialDelay.isNegative || maxDelay.isNegative) {
+      throw ArgumentError('Reconnect delays must not be negative');
+    }
+    if (maxDelay < initialDelay) {
+      throw ArgumentError('maxDelay must be >= initialDelay');
+    }
+    if (!multiplier.isFinite || multiplier < 1) {
+      throw RangeError.value(multiplier, 'multiplier', 'must be >= 1');
+    }
+  }
+
+  Duration delayForAttempt(int attempt) {
+    final factor = multiplier == 1 ? 1.0 : _pow(multiplier, attempt - 1);
+    final milliseconds = (initialDelay.inMilliseconds * factor).round();
+    return Duration(
+      milliseconds: milliseconds.clamp(0, maxDelay.inMilliseconds),
+    );
+  }
+
+  static double _pow(double base, int exponent) {
+    var value = 1.0;
+    for (var index = 0; index < exponent; index++) {
+      value *= base;
+    }
+    return value;
+  }
+}
+
+enum ScrcpyVideoCodec {
+  h264('h264', 0x68323634, 'H.264'),
+  h265('h265', 0x68323635, 'H.265 / HEVC'),
+  av1('av1', 0x61763031, 'AV1');
+
+  const ScrcpyVideoCodec(this.serverName, this.codecId, this.label);
+
+  final String serverName;
+  final int codecId;
+  final String label;
 }
 
 final class ScrcpyVideoOptions {
@@ -23,13 +83,41 @@ final class ScrcpyVideoOptions {
     this.maxSize = 1920,
     this.maxFps = 60,
     this.bitRate = 8 * 1000 * 1000,
-    this.codec = 'h264',
+    this.codec = ScrcpyVideoCodec.h264,
+    this.encoder,
   });
 
   final int maxSize;
   final int maxFps;
   final int bitRate;
-  final String codec;
+  final ScrcpyVideoCodec codec;
+
+  /// Optional Android MediaCodec encoder name, for example
+  /// `c2.android.avc.encoder`. Null lets scrcpy select the encoder.
+  final String? encoder;
+
+  void validate() {
+    if (maxSize < 0 || maxSize > 16384) {
+      throw RangeError.range(maxSize, 0, 16384, 'maxSize');
+    }
+    if (maxFps < 1 || maxFps > 240) {
+      throw RangeError.range(maxFps, 1, 240, 'maxFps');
+    }
+    if (bitRate < 100000 || bitRate > 1000000000) {
+      throw RangeError.range(bitRate, 100000, 1000000000, 'bitRate');
+    }
+    final selectedEncoder = encoder;
+    if (selectedEncoder != null &&
+        (selectedEncoder.trim().isEmpty ||
+            selectedEncoder != selectedEncoder.trim() ||
+            selectedEncoder.contains(RegExp(r'\s|=')))) {
+      throw ArgumentError.value(
+        selectedEncoder,
+        'encoder',
+        'must be a non-empty MediaCodec name without whitespace or =',
+      );
+    }
+  }
 }
 
 final class ScrcpySessionConfiguration {
@@ -38,12 +126,14 @@ final class ScrcpySessionConfiguration {
     this.video = const ScrcpyVideoOptions(),
     this.controlEnabled = true,
     this.audioEnabled = false,
+    this.reconnectPolicy = const ScrcpyReconnectPolicy(),
   });
 
   final String deviceSerial;
   final ScrcpyVideoOptions video;
   final bool controlEnabled;
   final bool audioEnabled;
+  final ScrcpyReconnectPolicy reconnectPolicy;
 }
 
 /// Owns the lifecycle of one future scrcpy video/control connection.
@@ -66,11 +156,21 @@ final class ScrcpySession {
   Future<void>? _preparing;
   Future<ScrcpyVideoConnection>? _starting;
   Future<void>? _stopping;
+  Future<void>? _reconnecting;
+  Completer<void>? _reconnectWake;
+  int _reconnectGeneration = 0;
+  final StreamController<ScrcpyVideoConnection> _reconnectedController =
+      StreamController<ScrcpyVideoConnection>.broadcast(sync: true);
   ScrcpyVideoConnection? _connection;
   bool _stopRequested = false;
   bool _disposed = false;
 
   ValueListenable<ScrcpySessionState> get state => _state;
+
+  /// Emits only replacement connections created after an unexpected
+  /// disconnect. The initial connection is returned by [start].
+  Stream<ScrcpyVideoConnection> get reconnectedConnections =>
+      _reconnectedController.stream;
 
   Future<void> prepare({AdbCancellationToken? cancellationToken}) {
     if (_disposed) {
@@ -164,6 +264,7 @@ final class ScrcpySession {
 
   Future<void> _stop() async {
     _stopRequested = true;
+    _cancelReconnect();
     _setState(ScrcpySessionState.stopping);
     try {
       await _starting;
@@ -184,6 +285,54 @@ final class ScrcpySession {
     _connection = null;
     _setState(ScrcpySessionState.disconnected);
     await connection.close();
+    final policy = configuration.reconnectPolicy;
+    if (!_disposed && !_stopRequested && policy.enabled) {
+      policy.validate();
+      _reconnecting ??= _reconnect(policy)
+          .whenComplete(() => _reconnecting = null);
+      unawaited(_reconnecting);
+    }
+  }
+
+  Future<void> _reconnect(ScrcpyReconnectPolicy policy) async {
+    final generation = ++_reconnectGeneration;
+    for (var attempt = 1; attempt <= policy.maxAttempts; attempt++) {
+      if (_disposed || _stopRequested || generation != _reconnectGeneration) {
+        return;
+      }
+      _setState(ScrcpySessionState.reconnecting);
+      final wake = Completer<void>();
+      _reconnectWake = wake;
+      await Future.any<void>(<Future<void>>[
+        Future<void>.delayed(policy.delayForAttempt(attempt)),
+        wake.future,
+      ]);
+      if (identical(_reconnectWake, wake)) _reconnectWake = null;
+      if (_disposed || _stopRequested || generation != _reconnectGeneration) {
+        return;
+      }
+      try {
+        final connection = await start();
+        if (_disposed || _stopRequested || generation != _reconnectGeneration) {
+          await connection.close();
+          return;
+        }
+        _reconnectedController.add(connection);
+        return;
+      } catch (error, stackTrace) {
+        if (attempt == policy.maxAttempts && !_disposed && !_stopRequested) {
+          _setState(ScrcpySessionState.error);
+          _reconnectedController.addError(error, stackTrace);
+        }
+      }
+    }
+  }
+
+  void _cancelReconnect() {
+    _reconnectGeneration++;
+    final wake = _reconnectWake;
+    _reconnectWake = null;
+    if (wake != null && !wake.isCompleted) wake.complete();
   }
 
   void _setState(ScrcpySessionState value) {
@@ -228,6 +377,8 @@ final class ScrcpySession {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _stopRequested = true;
+    _cancelReconnect();
     _state.value = ScrcpySessionState.disposed;
     final starting = _starting;
     final connection = _connection;
@@ -240,5 +391,6 @@ final class ScrcpySession {
       _connection = null;
     }());
     _state.dispose();
+    unawaited(_reconnectedController.close());
   }
 }

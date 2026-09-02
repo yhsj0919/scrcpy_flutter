@@ -11,6 +11,9 @@ final class ScrcpyControlMessageSerializer {
   static const int injectText = 1;
   static const int injectTouch = 2;
   static const int injectScroll = 3;
+  static const int getClipboardType = 8;
+  static const int setClipboardType = 9;
+  static const int maxClipboardTextLength = (1 << 18) - 14;
 
   static Uint8List key({
     required int keyCode,
@@ -37,6 +40,32 @@ final class ScrcpyControlMessageSerializer {
       ..setUint8(0, injectText)
       ..setUint32(1, payload.length, Endian.big);
     result.setRange(5, result.length, payload);
+    return result;
+  }
+
+  static Uint8List getClipboard({ScrcpyCopyKey copyKey = ScrcpyCopyKey.none}) =>
+      Uint8List.fromList(<int>[getClipboardType, copyKey.index]);
+
+  static Uint8List setClipboard({
+    required String text,
+    required int sequence,
+    bool paste = false,
+  }) {
+    final payload = utf8.encode(text);
+    if (payload.length > maxClipboardTextLength) {
+      throw ArgumentError.value(
+        text,
+        'text',
+        'UTF-8 clipboard text exceeds $maxClipboardTextLength bytes',
+      );
+    }
+    final result = Uint8List(14 + payload.length);
+    ByteData.sublistView(result)
+      ..setUint8(0, setClipboardType)
+      ..setUint64(1, sequence, Endian.big)
+      ..setUint8(9, paste ? 1 : 0)
+      ..setUint32(10, payload.length, Endian.big);
+    result.setRange(14, result.length, payload);
     return result;
   }
 
@@ -108,5 +137,93 @@ final class ScrcpyControlMessageSerializer {
       ..setInt16(15, fixed(vertical), Endian.big)
       ..setUint32(17, buttons, Endian.big);
     return data.buffer.asUint8List();
+  }
+}
+
+sealed class ScrcpyDeviceMessage {
+  const ScrcpyDeviceMessage();
+}
+
+final class ScrcpyClipboardMessage extends ScrcpyDeviceMessage {
+  const ScrcpyClipboardMessage(this.text);
+
+  final String text;
+}
+
+final class ScrcpyClipboardAckMessage extends ScrcpyDeviceMessage {
+  const ScrcpyClipboardAckMessage(this.sequence);
+
+  final int sequence;
+}
+
+final class ScrcpyUhidOutputMessage extends ScrcpyDeviceMessage {
+  const ScrcpyUhidOutputMessage(this.id, this.data);
+
+  final int id;
+  final Uint8List data;
+}
+
+/// Incremental scrcpy 4.1 device-to-client message parser.
+final class ScrcpyDeviceMessageParser {
+  static const int _clipboard = 0;
+  static const int _ackClipboard = 1;
+  static const int _uhidOutput = 2;
+
+  Uint8List _buffer = Uint8List(0);
+
+  List<ScrcpyDeviceMessage> add(List<int> chunk) {
+    if (chunk.isNotEmpty) {
+      final merged = Uint8List(_buffer.length + chunk.length)
+        ..setRange(0, _buffer.length, _buffer)
+        ..setRange(_buffer.length, _buffer.length + chunk.length, chunk);
+      _buffer = merged;
+    }
+    final messages = <ScrcpyDeviceMessage>[];
+    var offset = 0;
+    while (offset < _buffer.length) {
+      final available = _buffer.length - offset;
+      final type = _buffer[offset];
+      int? messageLength;
+      ScrcpyDeviceMessage? message;
+      if (type == _clipboard) {
+        if (available < 5) break;
+        final length = ByteData.sublistView(_buffer)
+            .getUint32(offset + 1, Endian.big);
+        if (length > ScrcpyControlMessageSerializer.maxClipboardTextLength) {
+          throw FormatException('scrcpy clipboard message is too large');
+        }
+        messageLength = 5 + length;
+        if (available < messageLength) break;
+        message = ScrcpyClipboardMessage(
+          utf8.decode(_buffer.sublist(offset + 5, offset + messageLength)),
+        );
+      } else if (type == _ackClipboard) {
+        messageLength = 9;
+        if (available < messageLength) break;
+        message = ScrcpyClipboardAckMessage(
+          ByteData.sublistView(_buffer).getUint64(offset + 1, Endian.big),
+        );
+      } else if (type == _uhidOutput) {
+        if (available < 5) break;
+        final id = ByteData.sublistView(_buffer)
+            .getUint16(offset + 1, Endian.big);
+        final length = ByteData.sublistView(_buffer)
+            .getUint16(offset + 3, Endian.big);
+        messageLength = 5 + length;
+        if (available < messageLength) break;
+        message = ScrcpyUhidOutputMessage(
+          id,
+          Uint8List.fromList(
+            _buffer.sublist(offset + 5, offset + messageLength),
+          ),
+        );
+      } else {
+        throw FormatException('Unknown scrcpy device message type $type');
+      }
+      messages.add(message);
+      offset += messageLength;
+    }
+    if (offset != 0) _buffer = Uint8List.fromList(_buffer.sublist(offset));
+    return messages;
   }
 }

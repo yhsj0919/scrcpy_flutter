@@ -49,7 +49,8 @@ final session = client.createSession(
       maxSize: 1920,
       maxFps: 60,
       bitRate: 8000000,
-      codec: 'h264',
+      codec: ScrcpyVideoCodec.h264,
+      encoder: 'c2.rk.avc.encoder', // 可选，留空由 scrcpy 选择
     ),
   ),
 );
@@ -61,6 +62,15 @@ session.state.addListener(() {
 
 session.dispose();
 ```
+
+设备编码器可以在创建 session 前动态探测：
+
+```dart
+final capabilities = await client.probeVideoCapabilities(deviceSerial);
+final h264Encoders = capabilities.forCodec(ScrcpyVideoCodec.h264);
+```
+
+探测结果区分硬件/软件、vendor 和 alias 编码器。当前 Windows Native Texture 后端仅声明 H.264 解码能力；设备即使具有 H.265/AV1 编码器，选择后也会得到明确的 `unsupportedCapability`，不会以黑屏代替错误。
 
 P0 的 `prepare()` 仅确认设备存在且状态可用。P1/P2 将在同一生命周期后面接入 server、socket、forward、Player 和 texture，不改变宿主的基本所有权模型。
 
@@ -85,7 +95,21 @@ ScrcpyInputLayer(
 )
 ```
 
-输入层公开归一化 pointer、滚轮、按键和文本接口。P3 会在内部补齐 contain/cover 黑边、旋转、DPI 和动态视频尺寸映射，不要求宿主重写 UI。
+输入层公开归一化 pointer、滚轮、按键和文本接口，并已在内部处理 contain/cover 黑边、旋转、DPI 和动态视频尺寸映射，不要求宿主重写 UI。`ScrcpyGestureSimulator` 可生成归一化双指缩放序列。
+
+## 剪贴板
+
+```dart
+final clipboard = ScrcpyClipboardSynchronizer(connection.input!);
+await clipboard.start(); // 开启双向同步
+
+await clipboard.pushHostToDevice(paste: true);
+await clipboard.pullDeviceToHost(copyKey: ScrcpyCopyKey.copy);
+
+await clipboard.stop();
+```
+
+`ScrcpyInputController` 也公开 `clipboardChanges`、`requestClipboard()` 和 `setClipboard()`，宿主可以只使用协议层而不启用系统剪贴板同步。内置 server 使用 `clipboard_autosync=false`，由插件统一处理轮询和回环抑制。剪贴板正文不会写入日志。
 
 ## 错误与日志
 

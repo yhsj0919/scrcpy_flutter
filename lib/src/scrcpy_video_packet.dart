@@ -8,12 +8,16 @@ final class ScrcpyVideoCodecInfo {
   });
 
   static const int h264 = 0x68323634;
+  static const int h265 = 0x68323635;
+  static const int av1 = 0x61763031;
 
   final int codecId;
   final int width;
   final int height;
 
   bool get isH264 => codecId == h264;
+  bool get isH265 => codecId == h265;
+  bool get isAv1 => codecId == av1;
 }
 
 final class ScrcpyVideoPacket {
@@ -76,7 +80,9 @@ final class ScrcpyVideoPacketParser {
         final data = ByteData.sublistView(_bytes, _offset, _offset + 4);
         final codecId = data.getUint32(0, Endian.big);
         _offset += 4;
-        if (codecId != ScrcpyVideoCodecInfo.h264) {
+        if (codecId != ScrcpyVideoCodecInfo.h264 &&
+            codecId != ScrcpyVideoCodecInfo.h265 &&
+            codecId != ScrcpyVideoCodecInfo.av1) {
           throw FormatException(
             'Unsupported scrcpy codec: 0x${codecId.toRadixString(16)}',
           );

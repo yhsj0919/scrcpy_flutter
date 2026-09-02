@@ -114,32 +114,35 @@
   - 提交/文件：`lib/src/scrcpy_video_connection*.dart`、`packages/adb_client/lib/src/adb_client_base.dart`、`packages/adb_client_process/lib/src/process_adb_client.dart`、`example/integration_test/native_video_test.dart`
   - 备注：每会话使用随机 31-bit SCID、唯一远端 server 路径和 `adb forward tcp:0`；由插件持有长运行 ADB shell 句柄。ADB forward 的 TCP 假成功不作为 ready，候选连接必须收到并缓存首个 H.264 字节块才返回。真机验证 server 4.1、动态端口、首批数据统计和逆序清理通过。
 
-- [ ] **P1-02 Flutter 显示真机首帧**
+- [x] **P1-02 Flutter 显示真机首帧**
   - 完成判定：Flutter Widget 显示正确方向、比例和内容的第一帧，并进入稳定播放状态。
-  - 验证证据：记录首帧耗时、解码器、分辨率、FPS、CPU/GPU/内存基线。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：进行中。`ScrcpyVideoConnection → Media Foundation → Flutter Texture` 已在真机出首帧；Demo 设备详情页支持启动/停止画面。尚缺完整性能基线和连续播放记录。
+  - 验证证据：`docs/reports/p1-video-baseline.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`windows/scrcpy_flutter_plugin.cpp`、`windows/CMakeLists.txt`、`example/integration_test/video_baseline_test.dart`、`docs/reports/p1-video-baseline.md`
+  - 备注：Xiaomi Android 16 + Windows Debug 真机 30 秒基线通过。主要采样：连接 644 ms、解码器就绪 916 ms、首帧 1223 ms、862×1920、9.94 FPS、8.98 Mbps、归一化 CPU 10.76%、GPU 平均/峰值 2.88%/3.91%、工作集 462.69 MiB。Debug 内存包含测试与调试运行时开销，详见报告。
 
-- [ ] **P1-03 帧级原生低延迟视频后端**
+- [x] **P1-03 帧级原生低延迟视频后端**
   - 交付物：保留 scrcpy codec/session/frame metadata 的 Dart 拆包器；统一原生解码后端接口；Windows Media Foundation 解码与最新帧 Flutter Texture。
   - 验收：首屏延迟和触摸到画面延迟均可测量；连续操作画面实时刷新；解码积压时只保留最新可解帧；不在 Dart 层逐帧复制 RGBA。
   - 参考：`scrcpy_video_view 0.0.1` 的 macOS 实现使用 scrcpy 12 字节帧头、VideoToolbox、单一 latest pixel buffer 和 `textureFrameAvailable()`；其代码仅支持 macOS，不能直接作为 Windows 依赖。
-  - 进度（2026-09-01）：已按 scrcpy 4.1 修正 codec/session/frame 拆包。Windows MF 后端设置 `MF_LOW_LATENCY` 后严格测试通过；已修复 NV12 stride 和 RGBA 通道顺序。NV12→RGBA 已移到独立线程，转换队列只保留最新解码帧。Demo 已支持最大尺寸、FPS、码率选择，并每秒显示实际 FPS、累计显示帧、编码包和接收流量；真机集成测试 `frames=11 / inputs=11` 通过。尚需测量端到端延迟、旋转和 D3D11 零拷贝后勾选。
+  - 验证证据：`docs/reports/p1-low-latency.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_video_packet.dart`、`lib/src/native_scrcpy_video.dart`、`windows/scrcpy_flutter_plugin.cpp`、`example/integration_test/control_latency_test.dart`、`docs/reports/p1-low-latency.md`
+  - 备注：codec/session/frame 拆包保留 PTS；Windows MF 使用低延迟模式，NV12→RGBA 在独立原生线程执行，单槽队列只保留最新待转换帧，Flutter Texture 不经过 Dart RGBA。Xiaomi 真机 20 次控制到画面指纹变化闭环平均 178.96 ms、P95 318.75 ms、最大 360.01 ms。基于单路 CPU 基线，D3D11 硬解/零拷贝不阻塞单设备 P1，但列为 P6 八设备验收前置优化。
 
-- [ ] **P1-04 验证旋转和动态分辨率**
+- [x] **P1-04 验证旋转和动态分辨率**
   - 完成判定：横竖屏切换不会永久黑屏或崩溃；宽高比和 texture 生命周期正确。
-  - 验证证据：至少连续旋转 20 次，记录是否重建 Player/texture。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：2026-09-01 已将 scrcpy 4.1 的重复 session 尺寸事件公开到视频连接；控制器在尺寸变化时暂停包消费、串行释放旧 Texture、按新宽高创建解码器并恢复流。自动化测试覆盖 1080×1920 → 1920×1080、旧 Texture 释放和停止清理。尚需真机连续旋转 20 次后勾选。
+  - 验证证据：`docs/reports/p1-rotation.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_video_connection_io.dart`、`lib/src/native_scrcpy_video.dart`、`test/native_scrcpy_video_test.dart`、`example/integration_test/rotation_video_test.dart`、`docs/reports/p1-rotation.md`
+  - 备注：scrcpy 4.1 重复 session 尺寸事件会触发旧 Texture 串行释放和按新宽高重建。Xiaomi Android 16 真机连续旋转 20/20 次通过，尺寸在 286×640 与 640×286 间正确切换，每次均取得 3–8 个显示帧；结束后旋转设置、ADB forward 和 server 进程均已恢复/清理。
 
-- [ ] **P1-05 视频稳定性验收**
+- [x] **P1-05 视频稳定性验收**
   - 完成判定：连续播放 30 分钟，无持续延迟增长、资源明显泄漏或不可恢复错误。
   - 验证证据：`docs/reports/p1-video-spike.md`。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-02
+  - 提交/文件：`example/integration_test/video_stability_test.dart`、`windows/scrcpy_flutter_plugin.cpp`、`docs/reports/p1-video-spike.md`
+  - 备注：Rockchip Android 15 + Windows Debug 连续 30 分钟通过，全程 ready。工作集增长 36.13 MiB、私有内存增长 24.93 MiB，峰值 488.23/463.10 MiB，期间多次回落且无持续失控增长。结束后 ADB forward、server 进程和远端临时 jar 均为 0。设备画面大部分时间静止，高动态内容压力留待 P6。
 
 ## P2：ADB 连接与会话生命周期（预计 5–8 天）
 
@@ -219,107 +222,107 @@
   - 提交/文件：`lib/src/scrcpy_input.dart`、`example/lib/main.dart`、`test/scrcpy_input_test.dart`
   - 备注：pointer down/move/up/cancel/hover/scroll 覆盖层已接入 Demo Texture，并通过同一 SCID/ADB forward 的第二条 control socket 发送；Focus 已映射 Escape、Home、方向、Enter、Backspace、Delete、Tab、Space、音量及字母数字键。Ctrl/Alt/Meta 等正常系统组合键继续放行；Windows 系统音量键拦截方案因实机验证无效已撤销。
 
-- [ ] **P3-03 坐标映射**
+- [x] **P3-03 坐标映射**
   - 完成判定：正确处理 contain/cover、黑边、裁剪、DPI、窗口缩放、横竖屏和动态视频尺寸。
-  - 验证证据：纯函数单元测试覆盖边界和四角坐标。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：2026-09-01 已实现 `BoxFit.contain/cover`、居中对齐、黑边过滤和 cover 源裁剪补偿；Demo 随动态视频尺寸更新映射。纯函数测试已覆盖 contain 黑边/边界和 cover 裁剪，尚需补齐四角、非居中 alignment 与真机旋转验证后勾选。
+  - 验证证据：`docs/reports/p3-coordinate-mapping.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_input.dart`、`test/scrcpy_input_test.dart`、`example/lib/main.dart`、`docs/reports/p3-coordinate-mapping.md`
+  - 备注：纯函数和 Widget 测试覆盖 contain/cover、可见四角、黑边、源裁剪、非居中 Alignment、窗口缩放、逻辑 DPI 等比例变化、横竖屏动态尺寸及 NaN/Infinity 防御。Demo 通过当前视频宽高重建输入层；P1-04 真机 20 次旋转为动态尺寸来源提供集成证据。根包 37 项测试全部通过。
 
-- [ ] **P3-04 基础导航与输入**
+- [x] **P3-04 基础导航与输入**
   - 完成判定：点击、长按、拖动/滑动、滚轮、Back、Home、Recent Apps、Power、Wake、音量、Enter、Delete 和基础键盘输入可用。
-  - 验证证据：真机操作清单逐项通过。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：2026-09-01 真机双 socket 集成测试通过，control 通道成功发送 CANCEL 消息且视频持续解码 `frames=11 / inputs=11`。Demo 已可尝试点击、拖动、滚轮和键盘控制。坐标映射已支持 contain/cover 和黑边过滤，仍需按本项清单逐项真机验收。
+  - 验证证据：`docs/reports/p3-basic-control.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_input.dart`、`example/lib/main.dart`、`example/integration_test/basic_control_test.dart`、`test/scrcpy_input_test.dart`、`docs/reports/p3-basic-control.md`
+  - 备注：Windows + ZC-3588A（Android 15，网络 ADB）真机通过完整基础控制序列；点击、长按、拖动、滚轮、导航、音量、Enter/Delete、文本、电源和唤醒消息连续发送后，视频由 2 帧推进至 43 帧且会话保持 streaming。Demo 增加独立设备控制卡片和文本发送入口；根包 40 项测试全部通过。
 
-- [ ] **P3-06 多指与手势模拟**
+- [x] **P3-06 多指与手势模拟**
   - 完成判定：正确维护多个 pointer ID，支持双指缩放等基础多指事件，取消/抬起不会遗留触点。
-  - 验证证据：序列化 fixture、Widget 事件测试和真机手势测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 验证证据：`docs/reports/p3-multitouch.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_input.dart`、`example/lib/main.dart`、`example/integration_test/basic_control_test.dart`、`test/scrcpy_input_test.dart`、`docs/reports/p3-multitouch.md`
+  - 备注：输入覆盖层透传 Flutter 原始 pointer ID；新增公开 `ScrcpyGestureSimulator.pinch()`，按归一化中心、方向、跨度、步数和时长生成成对双触点序列，并在 finally 中释放已按下触点。Demo 提供双指放大/缩小按钮。ZC-3588A 真机连续执行放大与缩小后视频 2→41 帧且会话保持稳定；并发 ID、MOVE、UP、CANCEL 与非法路径均有测试覆盖。
 
-- [ ] **P3-07 剪贴板与文本输入**
+- [x] **P3-07 剪贴板与文本输入**
   - 完成判定：支持基础文本注入和可开关的双向剪贴板同步，避免自身写入导致循环同步。
-  - 验证证据：中英文、换行、特殊字符和循环抑制测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：密码及敏感剪贴板不进入日志。
+  - 验证证据：`docs/reports/p3-clipboard.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_clipboard.dart`、`lib/src/scrcpy_control_message.dart`、`lib/src/scrcpy_input.dart`、`lib/src/scrcpy_video_connection_io.dart`、`example/lib/main.dart`、`example/integration_test/basic_control_test.dart`、`test/scrcpy_clipboard_test.dart`、`test/scrcpy_control_message_test.dart`
+  - 备注：按 scrcpy 4.1 官方协议实现 GET/SET_CLIPBOARD、设备 Clipboard/ACK 分片解析和 256 KiB 上限。内置 server 关闭自身 clipboard autosync，由插件提供可开关双向同步、显式推送/拉取、发送并粘贴及 COPY/CUT，避免双重同步语义；最近来源值抑制自身回环。ZC-3588A 真机完成中英文、换行、特殊字符的 SET→ACK→GET 精确读回。密码及敏感剪贴板不进入日志。
 
-- [ ] **P3-08 视频画质配置**
+- [x] **P3-08 视频画质配置**
   - 完成判定：API/UI 支持最大尺寸、最大 FPS、视频码率、H.264/H.265/AV1 能力选择及编码器选择；不支持时明确回退或报错。
-  - 验证证据：启动参数测试和至少两档画质的真机指标对比。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：首版默认仍为 H.264。
+  - 验证证据：`docs/reports/p3-video-quality.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_session.dart`、`lib/src/scrcpy_video_capabilities.dart`、`lib/src/scrcpy_client.dart`、`lib/src/scrcpy_video_packet.dart`、`lib/src/native_scrcpy_video.dart`、`lib/src/scrcpy_video_connection_io.dart`、`example/lib/main.dart`、`example/integration_test/video_quality_test.dart`、`test/scrcpy_video_capabilities_test.dart`
+  - 备注：API/UI 支持最大尺寸、FPS、码率、H.264/H.265/AV1 和设备编码器选择；使用内置 scrcpy 4.1 `list_encoders` 真机探测并区分硬件/软件、vendor 和 alias。当前 Windows 原生 Texture 解码明确仅支持 H.264，选择 H.265/AV1 时在渲染前返回 `unsupportedCapability`，不会黑屏或花屏。ZC-3588A 两档 H.264 指标对比通过。
 
 - [ ] **P3-05 控制稳定性验收**
   - 完成判定：横竖屏各连续操作 10 分钟，无坐标漂移、卡死和控制协议错位。
   - 验证证据：`docs/reports/p3-control.md`。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：⏸ 2026-09-02 按开发决策延期；先推进功能，不阻塞 P4/P5，后续集中执行长时间测试。
 
 ## P4：单设备稳定版与 S1 管理能力（核心 4–6 天，S1 增强 6–12 天）
 
 阶段完成判定：单设备连续运行 2 小时，拔插、断流、旋转和应用退出均能恢复或明确失败。
 
-- [ ] **P4-01 USB 热插拔检测**
+- [x] **P4-01 USB 热插拔检测**
   - 完成判定：设备加入、离开、unauthorized/offline 状态能更新到 Flutter。
-  - 验证证据：真机拔插测试记录。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 验证证据：`docs/reports/p4-device-monitor.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_device_monitor.dart`、`example/lib/main.dart`、`example/integration_test/device_monitor_test.dart`、`example/integration_test/usb_hotplug_test.dart`、`test/scrcpy_device_monitor_test.dart`
+  - 备注：插件公开轮询监视器并输出 added/removed/changed 快照，Demo 每 2 秒自动更新。单元测试覆盖 USB unauthorized→device、网络 offline 加入和设备移除；ZC-3588A 网络断开/重连及 23127PN0CC USB 物理拔出/插回真机测试均通过。
 
-- [ ] **P4-02 断线与重连策略**
+- [x] **P4-02 断线与重连策略**
   - 完成判定：区分用户停止与意外断线；重连有次数、退避和取消机制，不产生重复会话。
-  - 验证证据：异常注入和恢复日志。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 验证证据：`docs/reports/p4-reconnect.md`。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_session.dart`、`example/lib/main.dart`、`example/integration_test/reconnect_test.dart`、`test/scrcpy_flutter_test.dart`
+  - 备注：Session 支持默认关闭、可配置次数/指数退避/最大间隔的重连策略；用户 stop/dispose 立即唤醒并取消等待。替代连接通过 `reconnectedConnections` 输出，Demo 自动重建 Texture、输入和剪贴板通道。23127PN0CC 真机精确终止当前 SCID server 后自动取得新 SCID 并恢复出帧。
 
-- [ ] **P4-03 示例应用单设备页面**
+- [x] **P4-03 示例应用单设备页面**
   - 完成判定：仅使用插件公开 API，具备设备选择、启动/停止、画面、基础控制、状态、错误和诊断信息；example 内无协议、ADB 或解码核心逻辑。
   - 验证证据：example Windows 构建与人工验收。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：
+  - 完成日期：2026-09-02
+  - 提交/文件：`example/lib/main.dart`、`example/test/widget_test.dart`、`docs/reports/p4-single-device-demo.md`
+  - 备注：设备列表与单设备页面仅依赖 `package:scrcpy_flutter/scrcpy_flutter.dart` 公开 API；覆盖启动/停止、Native Texture 画面、鼠标键盘/多点触摸、导航键、文本、剪贴板、画质参数、会话错误、帧统计及连接诊断。Windows Release 构建成功，并确认产物包含内置 ADB、所需 DLL 和 scrcpy-server 4.1。
 
 - [ ] **P4-04 两小时稳定性验收**
   - 完成判定：连续显示和间歇控制 2 小时，无崩溃、显著泄漏或持续延迟增长。
   - 验证证据：`docs/reports/p4-single-device.md`。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：⏸ 2026-09-02 按开发决策延期；与其他长时间测试集中执行，不阻塞功能开发。
 
-- [ ] **P4-05 设备基础详情**
+- [x] **P4-05 设备基础详情**
   - 完成判定：提供品牌、型号、Android/SDK、ABI、屏幕、密度、连接类型、电池、存储和 uptime；单字段失败不导致整页失败。
   - 验证证据：数据来源文档、解析测试和真机页面。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：S1，可在单设备控制稳定后完成。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_device_details.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`test/scrcpy_device_details_test.dart`、`example/integration_test/device_details_test.dart`、`docs/reports/p4-device-details.md`
+  - 备注：公开 `getDeviceDetails()` API，并行读取 getprop、wm、battery、df 和 uptime，各查询组独立容错。Demo 显示基础信息及不可用字段提示；23127PN0CC USB 真机所有字段读取成功。
 
-- [ ] **P4-06 文件管理基础能力**
+- [x] **P4-06 文件管理基础能力**
   - 完成判定：支持浏览、push、pull、新建目录、重命名和删除，长任务可取消；删除/覆盖明确确认目标。
   - 验证证据：含空格、中文和特殊字符路径测试，以及失败/取消测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：S1，可后置，不阻塞设备墙视频原型。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_file_manager.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`example/integration_test/file_manager_test.dart`、`docs/reports/p4-file-management.md`
+  - 备注：公开文件管理器支持浏览、push、pull、新建目录、重命名和删除，所有操作接受取消令牌；拒绝删除根目录，默认拒绝覆盖。Demo 提供浏览页面、任务取消和明确目标确认。真机特殊字符路径闭环通过。
 
-- [ ] **P4-07 设备运行状态**
+- [x] **P4-07 设备运行状态**
   - 完成判定：展示电池、温度、CPU、内存、存储、网络和前台应用，并限制轮询频率。
   - 验证证据：解析测试、不同 Android 版本的缺失字段处理和轮询负载记录。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：S1，可后置。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_device_status.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`test/scrcpy_device_status_test.dart`、`example/integration_test/device_status_test.dart`、`docs/reports/p4-device-status.md`
+  - 备注：公开状态监视器默认 5 秒轮询且强制最短 2 秒，同一时刻只执行一轮采集。CPU 使用相邻样本差分，并采集前台应用 PID、CPU、PSS、RSS；设备支持时显示应用 GPU 忙碌率/GPU 内存以及驱动级整机 GPU/频率/来源。其余查询独立容错。Demo 可选 2/5/10/30 秒并随页面生命周期自动启动/关闭。Android 16 真机全部采集组通过。
 
-- [ ] **P4-08 批量安装/卸载应用**
+- [x] **P4-08 批量安装/卸载应用**
   - 完成判定：支持选择多台设备安装 APK、卸载包名；操作前确认目标和参数，限制并发，可取消，并显示逐设备结果。
   - 验证证据：部分成功、超时、取消、设备中途断开的集成测试。
-  - 完成日期：
-  - 提交/文件：
-  - 备注：作为首批批量 ADB 能力，不提供任意 shell 群发。
+  - 完成日期：2026-09-02
+  - 提交/文件：`lib/src/scrcpy_batch.dart`、`lib/src/scrcpy_client.dart`、`example/lib/main.dart`、`test/scrcpy_batch_test.dart`、`example/test/widget_test.dart`、`example/integration_test/batch_scheduler_test.dart`、`docs/reports/p4-batch-packages.md`
+  - 备注：通用调度器支持并发限制、逐项超时、全局取消、可配置重试及逐设备快照；产品 API 只封装批量安装/卸载，不提供任意 shell 群发。Demo 具备设备多选、参数预览确认和逐项结果。只读真机故障隔离通过；因无专用测试 APK，未擅自变更真机已有应用。
 
 ## P5：设备墙、批量控制与多开原型（预计 8–14 天）
 
@@ -405,6 +408,13 @@
   - 完成日期：
   - 提交/文件：
   - 备注：
+
+- [ ] **P6-05 D3D11 硬解与零拷贝视频路径**
+  - 完成判定：Windows 使用硬件解码，并通过 D3D11 共享纹理或等效路径交给 Flutter；不再为每帧执行全尺寸 CPU NV12→RGBA，且保留软件回退。
+  - 验证证据：与 P1 CPU 路径对比单路及多路 CPU/GPU/内存、首帧和 P95 延迟，并覆盖驱动不支持时回退测试。
+  - 完成日期：
+  - 提交/文件：
+  - 备注：P1 单路归一化 CPU 基线为 10.76%，该任务是 P6-03 八设备稳定验收的前置条件，除非目标硬件实测证明 CPU 路径已满足指标。
 
 - [ ] **P6-03 八设备稳定验收**
   - 完成判定：目标硬件上 8 台运行达到约定画质、延迟和稳定性标准。

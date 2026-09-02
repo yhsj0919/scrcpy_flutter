@@ -1,9 +1,16 @@
+import 'dart:convert';
+
 import 'package:adb_client/adb_client.dart';
 
 import 'scrcpy_capabilities.dart';
+import 'scrcpy_batch.dart';
+import 'scrcpy_device_details.dart';
+import 'scrcpy_device_status.dart';
 import 'scrcpy_error.dart';
+import 'scrcpy_file_manager.dart';
 import 'scrcpy_session.dart';
 import 'scrcpy_video_connection.dart';
+import 'scrcpy_video_capabilities.dart';
 
 /// Root service object owned by the embedding application.
 ///
@@ -141,12 +148,183 @@ final class ScrcpyClient {
     );
   }
 
+  Future<ScrcpyDeviceDetails> getDeviceDetails(
+    AdbDevice device, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    final service = adbClient;
+    if (service is! AdbShellService) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.unsupportedCapability,
+        'Device details are unavailable for this client',
+      );
+    }
+    final outputs = <String, String>{};
+    final unavailable = <String, String>{};
+
+    Future<void> query(String name, List<String> arguments) async {
+      try {
+        final result = await (service as AdbShellService).shell(
+          device.serial,
+          arguments,
+          cancellationToken: cancellationToken,
+        );
+        if (!result.isSuccess) {
+          unavailable[name] = 'ADB exit code ${result.exitCode}';
+          return;
+        }
+        outputs[name] = utf8.decode(result.stdout, allowMalformed: true);
+      } catch (error) {
+        unavailable[name] = '$error';
+      }
+    }
+
+    await Future.wait(<Future<void>>[
+      query('properties', const <String>['getprop']),
+      query('screen', const <String>['wm', 'size']),
+      query('density', const <String>['wm', 'density']),
+      query('battery', const <String>['dumpsys', 'battery']),
+      query('storage', const <String>['df', '-k', '/data']),
+      query('uptime', const <String>['cat', '/proc/uptime']),
+    ]);
+
+    final properties = ScrcpyDeviceDetailsParser.properties(
+      outputs['properties'] ?? '',
+    );
+    final screen = ScrcpyDeviceDetailsParser.screenSize(
+      outputs['screen'] ?? '',
+    );
+    final density = ScrcpyDeviceDetailsParser.density(outputs['density'] ?? '');
+    final battery = ScrcpyDeviceDetailsParser.battery(outputs['battery'] ?? '');
+    final storage = ScrcpyDeviceDetailsParser.storage(outputs['storage'] ?? '');
+    final uptime = ScrcpyDeviceDetailsParser.uptime(outputs['uptime'] ?? '');
+
+    return ScrcpyDeviceDetails(
+      serial: device.serial,
+      connectionType: device.connectionType,
+      observedAt: DateTime.now(),
+      brand: properties['ro.product.brand'],
+      manufacturer: properties['ro.product.manufacturer'],
+      model: properties['ro.product.model'] ?? device.model,
+      androidVersion: properties['ro.build.version.release'],
+      sdkLevel: int.tryParse(properties['ro.build.version.sdk'] ?? ''),
+      abi: properties['ro.product.cpu.abi'],
+      screenWidth: screen?.$1,
+      screenHeight: screen?.$2,
+      densityDpi: density,
+      batteryLevel: battery.level,
+      batteryTemperatureCelsius: battery.temperatureCelsius,
+      storageTotalBytes: storage?.totalBytes,
+      storageAvailableBytes: storage?.availableBytes,
+      uptime: uptime,
+      unavailable: Map<String, String>.unmodifiable(unavailable),
+    );
+  }
+
   ScrcpySession createSession(ScrcpySessionConfiguration configuration) =>
       ScrcpySession(
         adbDeviceService: adbClient,
         configuration: configuration,
         videoConnector: _videoConnectorOrNull(),
       );
+
+  ScrcpyFileManager createFileManager(String deviceSerial) {
+    final service = adbClient;
+    if (service is! AdbClient) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.unsupportedCapability,
+        'File management is unavailable for this client',
+      );
+    }
+    return ScrcpyFileManager(adbClient: service, serial: deviceSerial);
+  }
+
+  ScrcpyDeviceStatusMonitor createDeviceStatusMonitor(
+    String deviceSerial, {
+    Duration interval = const Duration(seconds: 5),
+  }) {
+    final service = adbClient;
+    if (service is! AdbShellService) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.unsupportedCapability,
+        'Device status is unavailable for this client',
+      );
+    }
+    return ScrcpyDeviceStatusMonitor(
+      adbShell: service as AdbShellService,
+      serial: deviceSerial,
+      interval: interval,
+    );
+  }
+
+  ScrcpyBatchPackageManager createBatchPackageManager() {
+    final service = adbClient;
+    if (service is! AdbPackageService) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.unsupportedCapability,
+        'Package management is unavailable for this client',
+      );
+    }
+    return ScrcpyBatchPackageManager(service as AdbPackageService);
+  }
+
+  Future<ScrcpyVideoCapabilities> probeVideoCapabilities(
+    String deviceSerial, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    final service = adbClient;
+    final serverPath = runtimeInfo?.scrcpyServerPath;
+    if (service is! AdbClient || serverPath == null || serverPath.isEmpty) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.unsupportedCapability,
+        'Video encoder discovery is unavailable for this client',
+      );
+    }
+    final probeId = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
+    final remotePath = '/data/local/tmp/scrcpy-server-probe-$probeId.jar';
+    try {
+      await service.push(
+        deviceSerial,
+        serverPath,
+        remotePath,
+        cancellationToken: cancellationToken,
+      );
+      final result = await service.shell(deviceSerial, <String>[
+        'CLASSPATH=$remotePath',
+        'app_process',
+        '/',
+        'com.genymobile.scrcpy.Server',
+        runtimeInfo?.scrcpyServerVersion ?? '4.1',
+        'list_encoders=true',
+        'cleanup=true',
+      ], cancellationToken: cancellationToken);
+      final output = utf8.decode(<int>[
+        ...result.stdout,
+        ...result.stderr,
+      ], allowMalformed: true);
+      if (!result.isSuccess) {
+        throw ScrcpyException(
+          ScrcpyErrorCode.connectionFailure,
+          'Unable to list device video encoders',
+          cause: result.exitCode,
+        );
+      }
+      final capabilities = ScrcpyVideoCapabilities.parseServerOutput(output);
+      if (capabilities.encoders.isEmpty) {
+        throw const ScrcpyException(
+          ScrcpyErrorCode.protocolFailure,
+          'scrcpy returned no supported video encoders',
+        );
+      }
+      return capabilities;
+    } finally {
+      try {
+        await service.shell(deviceSerial, <String>['rm', '-f', remotePath]);
+      } catch (_) {
+        // Probe cleanup is best-effort.
+      }
+    }
+  }
 
   ScrcpyVideoConnector createVideoConnector() {
     final connector = _videoConnectorOrNull();

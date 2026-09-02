@@ -13,6 +13,7 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <mftransform.h>
+#include <psapi.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -35,6 +36,13 @@ void Check(HRESULT hr, const char* operation) {
   message << operation << " failed (0x" << std::hex
           << static_cast<unsigned long>(hr) << ')';
   throw std::runtime_error(message.str());
+}
+
+uint64_t FileTimeValue(const FILETIME& value) {
+  ULARGE_INTEGER result;
+  result.LowPart = value.dwLowDateTime;
+  result.HighPart = value.dwHighDateTime;
+  return result.QuadPart;
 }
 
 const flutter::EncodableMap& Args(
@@ -109,6 +117,8 @@ class NativeVideoTexture {
   int64_t frame_count() const { return frame_count_; }
   int64_t input_count() const { return input_count_; }
   int64_t need_more_count() const { return need_more_count_; }
+  int64_t frame_fingerprint() const { return frame_fingerprint_; }
+  int64_t last_frame_ticks() const { return last_frame_ticks_; }
 
   void Decode(const std::vector<uint8_t>& bytes, int64_t pts_us,
               bool config, bool key_frame) {
@@ -336,6 +346,21 @@ class NativeVideoTexture {
         pixels_[p + 3] = 255;
       }
     }
+    uint64_t fingerprint = 1469598103934665603ULL;
+    const uint32_t step_x = (std::max)(1u, width_ / 32);
+    const uint32_t step_y = (std::max)(1u, height_ / 32);
+    for (uint32_t y = 0; y < height_; y += step_y) {
+      for (uint32_t x = 0; x < width_; x += step_x) {
+        const size_t p = (static_cast<size_t>(y) * width_ + x) * 4;
+        fingerprint ^= pixels_[p];
+        fingerprint *= 1099511628211ULL;
+        fingerprint ^= pixels_[p + 1];
+        fingerprint *= 1099511628211ULL;
+        fingerprint ^= pixels_[p + 2];
+        fingerprint *= 1099511628211ULL;
+      }
+    }
+    frame_fingerprint_ = static_cast<int64_t>(fingerprint & 0x7fffffffffffffffULL);
   }
 
   void QueueNv12(const uint8_t* source, uint32_t stride) {
@@ -364,6 +389,9 @@ class NativeVideoTexture {
         stride = pending_stride_;
       }
       ConvertNv12(frame.data(), stride);
+      LARGE_INTEGER completed{};
+      QueryPerformanceCounter(&completed);
+      last_frame_ticks_ = completed.QuadPart;
       ++frame_count_;
       registrar_->MarkTextureFrameAvailable(texture_id_);
     }
@@ -376,6 +404,8 @@ class NativeVideoTexture {
   LONG output_stride_ = 0;
   int64_t texture_id_ = -1;
   std::atomic<int64_t> frame_count_ = 0;
+  std::atomic<int64_t> frame_fingerprint_ = 0;
+  std::atomic<int64_t> last_frame_ticks_ = 0;
   int64_t input_count_ = 0;
   int64_t need_more_count_ = 0;
   std::mutex mutex_;
@@ -452,7 +482,46 @@ void ScrcpyFlutterPlugin::HandleVideoMethodCall(
           flutter::EncodableValue(video->second->input_count());
       stats[flutter::EncodableValue("needMore")] =
           flutter::EncodableValue(video->second->need_more_count());
+      stats[flutter::EncodableValue("fingerprint")] =
+          flutter::EncodableValue(video->second->frame_fingerprint());
+      stats[flutter::EncodableValue("lastFrameTicks")] =
+          flutter::EncodableValue(video->second->last_frame_ticks());
       result->Success(flutter::EncodableValue(stats));
+    } else if (call.method_name() == "clockMetrics") {
+      LARGE_INTEGER ticks{}, frequency{};
+      QueryPerformanceCounter(&ticks);
+      QueryPerformanceFrequency(&frequency);
+      flutter::EncodableMap clock;
+      clock[flutter::EncodableValue("ticks")] =
+          flutter::EncodableValue(static_cast<int64_t>(ticks.QuadPart));
+      clock[flutter::EncodableValue("frequency")] =
+          flutter::EncodableValue(static_cast<int64_t>(frequency.QuadPart));
+      result->Success(flutter::EncodableValue(clock));
+    } else if (call.method_name() == "processMetrics") {
+      PROCESS_MEMORY_COUNTERS_EX memory{};
+      memory.cb = sizeof(memory);
+      if (!GetProcessMemoryInfo(
+              GetCurrentProcess(),
+              reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory),
+              sizeof(memory))) {
+        throw std::runtime_error("Unable to read process memory metrics");
+      }
+      FILETIME created{}, exited{}, kernel{}, user{};
+      if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel,
+                           &user)) {
+        throw std::runtime_error("Unable to read process CPU metrics");
+      }
+      flutter::EncodableMap metrics;
+      metrics[flutter::EncodableValue("workingSetBytes")] =
+          flutter::EncodableValue(static_cast<int64_t>(memory.WorkingSetSize));
+      metrics[flutter::EncodableValue("privateBytes")] =
+          flutter::EncodableValue(static_cast<int64_t>(memory.PrivateUsage));
+      metrics[flutter::EncodableValue("cpuTime100ns")] = flutter::EncodableValue(
+          static_cast<int64_t>(FileTimeValue(kernel) + FileTimeValue(user)));
+      metrics[flutter::EncodableValue("logicalProcessors")] =
+          flutter::EncodableValue(static_cast<int32_t>(
+              GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)));
+      result->Success(flutter::EncodableValue(metrics));
     } else if (call.method_name() == "dispose") {
       int64_t id = GetInt(args, "textureId");
       auto video = videos_.find(id);
