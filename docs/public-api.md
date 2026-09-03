@@ -1,6 +1,6 @@
 # P0 公开 API 基线
 
-更新于 2026-09-02。宿主按使用范围导入两个独立入口：
+更新于 2026-09-03。宿主按使用范围导入两个独立入口：
 
 ```dart
 import 'package:adb_client/adb_client.dart';
@@ -65,6 +65,40 @@ session.state.addListener(() {
 session.dispose();
 ```
 
+设备墙或需要同时嵌入多个画面的宿主，应通过 `ScrcpySessionManager` 统一持有 Session：
+
+```dart
+final sessions = ScrcpySessionManager(
+  client: client,
+  maxSessions: 16,
+);
+
+final mainScreen = sessions.create(
+  const ScrcpySessionConfiguration(deviceSerial: 'device-a'),
+  id: 'device-a-main',
+);
+final appScreen = sessions.create(
+  const ScrcpySessionConfiguration(
+    deviceSerial: 'device-a',
+    displaySource: ScrcpyDisplaySource.virtual(
+      width: 1280,
+      height: 720,
+      dpi: 240,
+    ),
+  ),
+);
+
+final connection = await sessions.start(mainScreen.id);
+sessions.focus(appScreen.id);
+
+final deviceSessions = sessions.sessionsForDevice('device-a');
+await sessions.remove(mainScreen.id);
+await sessions.close();
+sessions.dispose();
+```
+
+管理器拥有 `ScrcpySession` 和连接生命周期，并公开只读的 `ScrcpyManagedSession`；宿主仍拥有从连接创建的视频、音频和剪贴板 Controller，移除 Session 前应先释放这些 Controller。`sessionsByDevice` 提供“设备 → Session”层级，默认总上限为 16，也可以由宿主调整或设为 `null`。
+
 `displaySource` 默认是主屏，也可以选择已有显示或声明一个新虚拟显示：
 
 ```dart
@@ -125,6 +159,8 @@ audio.packets.listen((packet) {
 
 编码音频传输层与 Windows 原生播放、音量、静音及多窗口焦点管理均已公开。
 
+`ScrcpyAudioOptions` 默认使用 `ScrcpyAudioSource.automatic`：Android 11 选择 `output`，Android 12 及以上选择 `playback`，无法取得系统版本时保守选择 `output`。宿主可以显式指定音源覆盖自动策略；`duplicateOnDevice` 仍要求显式选择 `playback`。虚拟显示工作台固定使用 `playback`，避免部分厂商把虚拟屏 `output` 路由同时复制到手机。
+
 Windows 可直接创建原生播放器；停止播放器不会关闭共享的视频连接：
 
 ```dart
@@ -142,7 +178,7 @@ player.dispose();
 
 通过 `player.value` 可观察播放状态、编码包数、传输字节、解码包、已播放/丢弃缓冲和当前缓冲字节。当前只支持 Opus。多个播放器可注册到 `ScrcpyAudioFocusManager`；请求焦点时只恢复目标播放器的用户静音状态，其余播放器保持静音，断流或播放错误会自动释放焦点。
 
-P0 的 `prepare()` 仅确认设备存在且状态可用。P1/P2 将在同一生命周期后面接入 server、socket、forward、Player 和 texture，不改变宿主的基本所有权模型。
+`prepare()` 只确认设备存在且状态可用；`start()` 才建立 server、socket 和 forward。Player、texture 等平台 Controller 由宿主独立持有，不改变 Session 的所有权模型。
 
 ## 视频组件
 

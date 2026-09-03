@@ -123,18 +123,19 @@ final class ScrcpyVideoOptions {
 }
 
 enum ScrcpyAudioSource {
+  automatic(null),
   output('output'),
   playback('playback');
 
   const ScrcpyAudioSource(this.serverName);
-  final String serverName;
+  final String? serverName;
 }
 
 final class ScrcpyAudioOptions {
   const ScrcpyAudioOptions({
     this.codec = ScrcpyAudioCodec.opus,
     this.bitRate = 128000,
-    this.source = ScrcpyAudioSource.output,
+    this.source = ScrcpyAudioSource.automatic,
     this.duplicateOnDevice = false,
   });
 
@@ -142,6 +143,19 @@ final class ScrcpyAudioOptions {
   final int bitRate;
   final ScrcpyAudioSource source;
   final bool duplicateOnDevice;
+
+  /// Resolves [ScrcpyAudioSource.automatic] for the target Android SDK.
+  ///
+  /// Android 11 uses the system-output route for compatibility. Newer
+  /// versions use playback capture, which preserves the behavior already
+  /// validated by the demo on Android 12+ devices. An unknown SDK takes the
+  /// conservative output route.
+  ScrcpyAudioSource resolveSourceForAndroidSdk(int? androidSdk) {
+    if (source != ScrcpyAudioSource.automatic) return source;
+    return androidSdk != null && androidSdk >= 31
+        ? ScrcpyAudioSource.playback
+        : ScrcpyAudioSource.output;
+  }
 
   void validate() {
     if (bitRate < 8000 || bitRate > 1000000) {

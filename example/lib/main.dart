@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
+import 'device_wall.dart';
 import 'virtual_display_workspace.dart';
 
 extension on ScrcpyClient {
@@ -232,6 +233,22 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       appBar: AppBar(
         title: const Text('scrcpy_flutter 设备验证'),
         actions: <Widget>[
+          IconButton(
+            tooltip: '打开设备墙',
+            onPressed: _devices.any((device) => device.isReady)
+                ? () => Navigator.of(context).push<void>(
+                    MaterialPageRoute<void>(
+                      builder: (_) => DeviceWallPage(
+                        client: widget.client,
+                        devices: _devices
+                            .where((device) => device.isReady)
+                            .toList(growable: false),
+                      ),
+                    ),
+                  )
+                : null,
+            icon: const Icon(Icons.grid_view),
+          ),
           IconButton(
             tooltip: '批量应用管理',
             onPressed: _devices.any((device) => device.isReady)
@@ -762,7 +779,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
       audioEnabled: _audioPlaybackTarget == _AudioPlaybackTarget.computer,
       audio: ScrcpyAudioOptions(
         codec: ScrcpyAudioCodec.opus,
-        source: ScrcpyAudioSource.playback,
+        source: ScrcpyAudioSource.automatic,
         duplicateOnDevice: false,
       ),
       displaySource: widget.displaySource,

@@ -110,6 +110,28 @@ void main() {
       returnsNormally,
     );
   });
+
+  test('resolves automatic audio source by Android SDK', () {
+    const automatic = ScrcpyAudioOptions();
+    expect(automatic.resolveSourceForAndroidSdk(30), ScrcpyAudioSource.output);
+    expect(
+      automatic.resolveSourceForAndroidSdk(31),
+      ScrcpyAudioSource.playback,
+    );
+    expect(
+      automatic.resolveSourceForAndroidSdk(36),
+      ScrcpyAudioSource.playback,
+    );
+    expect(
+      automatic.resolveSourceForAndroidSdk(null),
+      ScrcpyAudioSource.output,
+    );
+    expect(
+      const ScrcpyAudioOptions(source: ScrcpyAudioSource.output)
+          .resolveSourceForAndroidSdk(36),
+      ScrcpyAudioSource.output,
+    );
+  });
 }
 
 Uint8List _u32(int value) =>

@@ -56,6 +56,8 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
   final String _serverPath;
   final String? _expectedServerSha256;
   Future<void>? _resourceValidation;
+  final Map<String, Future<int?>> _androidSdkBySerial =
+      <String, Future<int?>>{};
 
   @override
   Future<ScrcpyVideoConnection> connect(
@@ -111,6 +113,13 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         );
       }
       final video = configuration.video;
+      final audioPreparation = await _prepareAndroid11AudioCapture(
+        configuration,
+        cancellationToken: cancellationToken,
+      );
+      final audioSource = configuration.audio.resolveSourceForAndroidSdk(
+        audioPreparation.sdk,
+      );
       final serverArguments = <String>[
         'CLASSPATH=$remotePath',
         'app_process',
@@ -133,7 +142,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         if (configuration.audioEnabled) ...<String>[
           'audio_codec=${configuration.audio.codec.serverName}',
           'audio_bit_rate=${configuration.audio.bitRate}',
-          'audio_source=${configuration.audio.source.serverName}',
+          'audio_source=${audioSource.serverName!}',
           'audio_dup=${configuration.audio.duplicateOnDevice}',
         ],
         if (video.encoder case final encoder?) 'video_encoder=$encoder',
@@ -183,6 +192,20 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
           remoteServerPath: remotePath,
         ),
       );
+      if (audioPreparation.popupStarted) {
+        final audio = connection.audio;
+        if (audio == null) {
+          unawaited(_dismissAndroid11AudioPopup(configuration.deviceSerial));
+        } else {
+          unawaited(
+            audio.codec
+                .timeout(const Duration(seconds: 5), onTimeout: () => null)
+                .whenComplete(
+                  () => _dismissAndroid11AudioPopup(configuration.deviceSerial),
+                ),
+          );
+        }
+      }
       if (configuration.audioRequired) {
         ScrcpyAudioCodecInfo? audioCodec;
         try {
@@ -228,6 +251,88 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         ]),
       );
       rethrow;
+    }
+  }
+
+  Future<({int? sdk, bool popupStarted})> _prepareAndroid11AudioCapture(
+    ScrcpySessionConfiguration configuration, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    if (!configuration.audioEnabled) return (sdk: null, popupStarted: false);
+    final serial = configuration.deviceSerial;
+    final sdkLookup = _androidSdkBySerial.putIfAbsent(
+      serial,
+      () => _readAndroidSdk(serial, cancellationToken: cancellationToken),
+    );
+    final sdk = await sdkLookup;
+    if (sdk == null && identical(_androidSdkBySerial[serial], sdkLookup)) {
+      _androidSdkBySerial.remove(serial);
+    }
+    if (sdk != 30) return (sdk: sdk, popupStarted: false);
+    try {
+      // Android 11 only permits shell audio capture while the shell package is
+      // considered foreground. scrcpy also performs this workaround, but a
+      // few vendor ROMs require the activity to be started explicitly before
+      // the server process (Genymobile/scrcpy#4147).
+      final result = await _adb.shell(serial, const <String>[
+        'am',
+        'start',
+        '-W',
+        '-n',
+        'com.android.shell/.HeapDumpActivity',
+      ], cancellationToken: cancellationToken);
+      if (!result.isSuccess && kDebugMode) {
+        debugPrint('scrcpy audio: Android 11 foreground preparation failed');
+      }
+      return (sdk: sdk, popupStarted: result.isSuccess);
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('scrcpy audio: Android 11 foreground preparation: $error');
+      }
+      return (sdk: sdk, popupStarted: false);
+    }
+  }
+
+  Future<void> _dismissAndroid11AudioPopup(String serial) async {
+    try {
+      final activities = await _adb.shell(serial, const <String>[
+        'dumpsys',
+        'activity',
+        'activities',
+      ]);
+      final output = utf8.decode(<int>[
+        ...activities.stdout,
+        ...activities.stderr,
+      ], allowMalformed: true);
+      final popupIsForeground = const LineSplitter()
+          .convert(output)
+          .any(
+            (line) =>
+                line.contains('ResumedActivity') &&
+                line.contains('com.android.shell/.HeapDumpActivity'),
+          );
+      if (!popupIsForeground) return;
+      await _adb.shell(serial, const <String>['input', 'keyevent', '4']);
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('scrcpy audio: unable to dismiss Android 11 popup: $error');
+      }
+    }
+  }
+
+  Future<int?> _readAndroidSdk(
+    String serial, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    try {
+      final result = await _adb.shell(serial, const <String>[
+        'getprop',
+        'ro.build.version.sdk',
+      ], cancellationToken: cancellationToken);
+      if (!result.isSuccess) return null;
+      return int.tryParse(utf8.decode(result.stdout).trim());
+    } catch (_) {
+      return null;
     }
   }
 

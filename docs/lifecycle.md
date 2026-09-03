@@ -1,6 +1,6 @@
 # 多实例与资源生命周期
 
-更新于 2026-09-01。本约束适用于插件被其他 Flutter 应用嵌入以及后期设备墙场景。
+更新于 2026-09-03。本约束适用于插件被其他 Flutter 应用嵌入以及设备墙场景。
 
 ## 所有权
 
@@ -8,16 +8,18 @@
 宿主应用
 └── ScrcpyClient（可创建多个，不依赖全局可变单例）
     ├── AdbClient/transport（由 Client 注入并持有）
-    ├── ScrcpySession A
-    │   ├── cancellation scope
-    │   ├── server process / video+control socket / forward / remote server
-    │   ├── video controller / decoder / texture
-    │   └── input controller
-    └── ScrcpySession B（资源与 A 完全独立）
+    └── ScrcpySessionManager（设备墙或多画面宿主持有）
+        ├── device A
+        │   ├── main-display Session
+        │   └── virtual-display Session
+        └── device B
+            └── main-display Session
 ```
 
-- 宿主负责保留并最终释放 `ScrcpyClient` 及它创建的 Session。
+- 单画面宿主可以直接持有 Session；多画面宿主负责保留并最终关闭 `ScrcpySessionManager`。
+- Manager 拥有其创建的 Session，提供设备分组、查询、焦点、启停和统一销毁，默认最多持有 16 个 Session。
 - 每个 Session 独立拥有 SCID、端口、远端 server 路径、进程和 socket；Controller 独立拥有解码器和 texture，不允许使用“当前唯一会话”全局槽位。
+- Manager 不取得视频、音频、输入和剪贴板 Controller 的所有权；宿主必须在移除对应 Session 前释放 Controller。
 - 视频 Widget 只观察 Controller，不拥有 Session、Player 或 texture；Widget 从树中移除不等同于结束 Session。
 - 批量任务拥有自己的取消令牌和逐设备子任务，不取得 Session 的资源所有权。
 

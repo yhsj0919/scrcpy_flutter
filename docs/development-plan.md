@@ -16,11 +16,11 @@
 
 ## 当前交接摘要
 
-- 当前阶段：P5-B 音频。
+- 当前阶段：P6 多 Session 与设备墙。
 - 当前状态：P0～P4 与 P5-00～P5-06 已完成；P5-07 已完成协议实现和 Android 16 Opus 真机闭环，Android 10/11/12+ 兼容性按决策延期。P5-08 的播放、控制、单音频焦点及工作台重连代码已完成，等待用户基本功能验证。
-- 下一项：用户完成 P5-08 基本断连验证后勾选该项；开发继续进入 P6-01 多 Session 管理器。切换爆音和 30 分钟验收延期。
+- 下一项：P6-01 多 Session 管理器代码与自动化用例已完成；P6-02 已接入跨设备主屏与虚拟应用窗口的统一响应式网格，等待基本功能验证后完成本项。Flutter 定向测试等待本机测试进程恢复；P5 音频切换爆音和长时间验收延期。
 - 验证策略：所有 30 分钟及以上的长时间稳定性/压力测试统一延期，由用户后续集中执行；当前开发以自动化测试和基本功能人工验证为完成依据。
-- 当前阻塞：无；真实批量安装/卸载仍等待专用测试 APK 做补充真机验收，不阻塞 P5。
+- 当前阻塞：Android 11 开发板音频兼容待用户稍后真机复验；真实批量安装/卸载仍等待专用测试 APK 做补充真机验收。两项均不阻塞当前设备墙功能开发。
 - 已选基线：Windows、scrcpy 4.1、平台原生解码、网络/USB ADB、H.264；P5 增加 Opus 音频与虚拟显示。
 - 当前功能闭环：USB/网络/配对码连接，实时画面，画质配置，scrcpy 基础控制、模拟触摸、剪贴板、设备管理、安全批量包操作，以及 Android 16 Opus 编码音频传输。
 - 交付形态：从 P0 起按可嵌入 Flutter 插件实现；example 只消费插件公开 API，不承载核心逻辑。
@@ -390,7 +390,7 @@
   - 验证证据：协议分包、断流、音频不可用、Android 10/11/12+ 行为测试和真机原始包记录。
   - 完成日期：
   - 提交/文件：`lib/src/scrcpy_audio_packet.dart`、`lib/src/scrcpy_video_connection*.dart`、`lib/src/scrcpy_session.dart`、`test/scrcpy_audio_packet_test.dart`、`example/integration_test/audio_transport_test.dart`、`docs/reports/p5-audio-transport.md`
-  - 备注：首版优先 Opus；已实现独立 audio socket、codec/config/packet/PTS 解析、可选降级和 require-audio 清理语义。Xiaomi Android 16 真机取得 Opus 原始包并通过验收。仍待 Android 10/11/12+ 补验，因此暂不勾选；Android 11 启动条件及应用禁止 playback capture 必须明确提示。
+  - 备注：首版优先 Opus；已实现独立 audio socket、codec/config/packet/PTS 解析、可选降级和 require-audio 清理语义。Xiaomi Android 16 真机取得 Opus 原始包并通过验收。Rockchip Android 11 开发板已确认解锁且具备 Opus 编码器，但厂商 ROM 的 shell 前台判定仍使捕获失败；连接器已增加 API 30 专用 HeapDumpActivity 前台准备和精确弹窗关闭。主画面/设备墙自动在 Android 11 选择 `output`、Android 12+ 选择 `playback`，等待用户稍后用开发板复验。Android 10/12+ 仍待补验，因此暂不勾选。
 
 - [ ] **P5-08 Windows 音频解码、播放与焦点**
   - 完成判定：Windows 低延迟播放设备音频，支持静音、音量、缓冲和延迟统计；多个窗口同时存在时默认只播放聚焦窗口，切换无明显爆音或资源泄漏。
@@ -409,15 +409,15 @@
   - 完成判定：插件公开 API 能并发创建、查询、聚焦、停止和销毁独立 Session；支持“设备 → display/session”层级，无共享可变单例冲突，同一宿主可嵌入多个视频组件。
   - 验证证据：并发生命周期、同设备多 Session、跨设备 Session 和资源上限测试。
   - 完成日期：
-  - 提交/文件：
-  - 备注：统一管理视频、音频、输入、剪贴板和重连归属。
+  - 提交/文件：`lib/src/scrcpy_session_manager.dart`、`test/scrcpy_session_manager_test.dart`、`docs/public-api.md`、`docs/lifecycle.md`
+  - 备注：已实现创建、查询、设备分组、焦点、prepare/start/stop/remove、默认 16 路可配置上限及统一 close/dispose；Session 与重连连接归 Manager，平台 Controller 仍由宿主持有。静态分析通过，定向 Flutter 测试因本机已有 Flutter/Dart 测试进程占用而待运行，因此暂不勾选。
 
 - [ ] **P6-02 响应式设备/应用网格**
   - 完成判定：网格同时容纳设备主屏和虚拟应用窗口，格子保持比例，窗口缩放不卡顿，支持聚焦、全屏和返回设备墙。
   - 验证证据：不同窗口尺寸、1/2/4/8 格 Widget 测试及人工验收。
   - 完成日期：
-  - 提交/文件：
-  - 备注：键盘、剪贴板和音频只归属明确聚焦的格子。
+  - 提交/文件：`example/lib/device_wall.dart`、`example/lib/main.dart`、`example/test/device_wall_test.dart`
+  - 备注：已完成跨设备主屏的 1/2/3/4 列响应式网格、格子比例、聚焦边框、单格放大/返回设备墙、触摸输入和单音频焦点，Session/Controller 在布局切换时保持不重启；并已支持选择设备和应用后将虚拟应用窗口加入同一网格及独立关闭。虚拟窗口固定使用 playback 音源，主屏继续按系统版本自动选择。等待基本功能验证后勾选；键盘、剪贴板和音频只归属明确聚焦的格子。
 
 - [ ] **P6-03 会话故障隔离与虚拟屏清理**
   - 完成判定：任一设备拔出、server/编码器崩溃、音频失败或虚拟屏关闭不影响其他窗口；异常退出后不残留可清理的 display/server/forward。

@@ -4,6 +4,7 @@ export 'src/scrcpy_error.dart';
 export 'src/scrcpy_log.dart';
 export 'src/scrcpy_capabilities.dart';
 export 'src/scrcpy_session.dart';
+export 'src/scrcpy_session_manager.dart';
 export 'src/scrcpy_display_source.dart';
 export 'src/scrcpy_adaptive_display.dart';
 export 'src/scrcpy_video.dart';
