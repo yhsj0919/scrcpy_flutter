@@ -123,7 +123,7 @@ audio.packets.listen((packet) {
 });
 ```
 
-当前公开的是编码音频传输层；Windows 解码、播放、音量和焦点属于 P5-08。
+编码音频传输层与 Windows 原生播放、音量、静音及多窗口焦点管理均已公开。
 
 Windows 可直接创建原生播放器；停止播放器不会关闭共享的视频连接：
 
@@ -140,7 +140,7 @@ await player.stop();
 player.dispose();
 ```
 
-通过 `player.value` 可观察播放状态、编码包数、传输字节、解码包、已播放/丢弃缓冲和当前缓冲字节。当前只支持 Opus；多窗口音频焦点策略仍在 P5-08 后续项中。
+通过 `player.value` 可观察播放状态、编码包数、传输字节、解码包、已播放/丢弃缓冲和当前缓冲字节。当前只支持 Opus。多个播放器可注册到 `ScrcpyAudioFocusManager`；请求焦点时只恢复目标播放器的用户静音状态，其余播放器保持静音，断流或播放错误会自动释放焦点。
 
 P0 的 `prepare()` 仅确认设备存在且状态可用。P1/P2 将在同一生命周期后面接入 server、socket、forward、Player 和 texture，不改变宿主的基本所有权模型。
 

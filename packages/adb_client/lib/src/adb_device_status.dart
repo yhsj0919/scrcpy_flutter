@@ -224,6 +224,17 @@ final class AdbDeviceStatusParser {
     return values.length < 2 ? null : (busy: values[0], total: values[1]);
   }
 
+  /// Parses Qualcomm KGSL `gpubusy`, whose values describe the interval
+  /// accumulated by the driver for this read (busy time followed by total
+  /// time). Qualcomm drivers may report `0 0` while fully idle; this is a
+  /// valid zero-utilization sample when the KGSL node is readable.
+  static double? gpuBusyPercent(String output) {
+    final sample = gpuBusyTimes(output);
+    if (sample == null) return null;
+    if (sample.total == 0) return sample.busy == 0 ? 0 : null;
+    return (sample.busy * 100 / sample.total).clamp(0, 100);
+  }
+
   static double? maliGpuUtilization(String output) {
     final match = RegExp(r'\d+(?:\.\d+)?').firstMatch(output);
     final value = match == null ? null : double.tryParse(match.group(0)!);
@@ -280,7 +291,6 @@ final class AdbDeviceStatusMonitor {
   AdbCpuTimes? _previousCpu;
   _ApplicationCpuSample? _previousApplicationCpu;
   _ApplicationGpuSample? _previousApplicationGpu;
-  ({int busy, int total})? _previousDeviceGpuBusy;
   Future<AdbDeviceStatus>? _pendingRefresh;
   bool _closed = false;
 
@@ -368,19 +378,12 @@ final class AdbDeviceStatusMonitor {
     if (deviceGpuSource == null && deviceGpuPercent != null) {
       deviceGpuSource = 'Mali utilization';
     }
-    final kgsl = AdbDeviceStatusParser.gpuBusyTimes(
-      output['deviceGpuKgsl'] ?? '',
-    );
-    final previousKgsl = _previousDeviceGpuBusy;
-    if (deviceGpuPercent == null && kgsl != null && previousKgsl != null) {
-      final busyDelta = kgsl.busy - previousKgsl.busy;
-      final totalDelta = kgsl.total - previousKgsl.total;
-      if (busyDelta >= 0 && totalDelta > 0) {
-        deviceGpuPercent = (busyDelta * 100 / totalDelta).clamp(0, 100);
-        deviceGpuSource = 'Qualcomm KGSL';
-      }
+    final kgslOutput = output['deviceGpuKgsl'] ?? '';
+    final kgslSample = AdbDeviceStatusParser.gpuBusyTimes(kgslOutput);
+    deviceGpuPercent ??= AdbDeviceStatusParser.gpuBusyPercent(kgslOutput);
+    if (deviceGpuSource == null && kgslSample != null) {
+      deviceGpuSource = 'Qualcomm KGSL';
     }
-    if (kgsl != null) _previousDeviceGpuBusy = kgsl;
     final foreground = AdbDeviceStatusParser.foregroundApplication(
       output['foreground'] ?? '',
     );

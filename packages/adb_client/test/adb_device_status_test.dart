@@ -73,6 +73,9 @@ void main() {
       busy: 1200,
       total: 4000,
     ));
+    expect(AdbDeviceStatusParser.gpuBusyPercent('1200 4000\n'), 30);
+    expect(AdbDeviceStatusParser.gpuBusyPercent('0 0\n'), 0);
+    expect(AdbDeviceStatusParser.gpuBusyPercent('1 0\n'), isNull);
     expect(AdbDeviceStatusParser.maliGpuUtilization('utilization: 42\n'), 42);
   });
 

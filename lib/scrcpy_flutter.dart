@@ -12,6 +12,7 @@ export 'src/scrcpy_video_connection.dart';
 export 'src/scrcpy_video_packet.dart';
 export 'src/scrcpy_audio_packet.dart';
 export 'src/scrcpy_audio.dart';
+export 'src/scrcpy_audio_focus.dart';
 export 'src/native_scrcpy_audio.dart';
 export 'src/native_scrcpy_video.dart';
 export 'src/scrcpy_input.dart';

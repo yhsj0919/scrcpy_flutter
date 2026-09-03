@@ -4,7 +4,9 @@ Windows 构建默认随插件分发固定版本的 ADB 及其运行库，宿主�
 
 一个基于 scrcpy server 的可嵌入式 Flutter Android 设备显示与控制插件。它首先是供其他 Flutter 应用依赖的插件包，仓库中的 example 只用于演示和验收。长期目标是实现由 Flutter 渲染和管理的低延迟多设备墙。
 
-项目目前已完成 Windows 单设备管理、视频与控制闭环、同设备多虚拟屏工作台，以及接入 Demo 的 libopus Windows 音频播放；多窗口音频焦点、兼容性补验和跨设备设备墙仍待开发。
+项目目前已完成 Windows 单设备管理、视频与控制闭环、同设备多虚拟屏工作台，以及 libopus Windows 音频播放和工作台单音频焦点；兼容性补验和跨设备设备墙仍待开发。
+
+项目目前为内部开发版本（`publish_to: none`），尚未选定项目级开源许可证。第三方组件各自的许可证与来源见[第三方组件清单](docs/third-party-components.md)。
 
 ## 项目文档
 

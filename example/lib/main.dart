@@ -1755,9 +1755,13 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
               'CPU：${status.cpuUsagePercent == null ? '采样中' : '${status.cpuUsagePercent!.toStringAsFixed(1)}%'}',
             ),
             Text(
-              '设备 GPU：${status.deviceGpuPercent == null ? '不支持' : '${status.deviceGpuPercent!.toStringAsFixed(1)}%'}'
+              '设备 GPU：${status.deviceGpuPercent == null
+                  ? status.deviceGpuSource == null
+                        ? '不支持'
+                        : '采样中 · ${status.deviceGpuSource}'
+                  : '${status.deviceGpuPercent!.toStringAsFixed(1)}%'}'
               '${status.deviceGpuFrequencyHz == null ? '' : ' · ${(status.deviceGpuFrequencyHz! / 1000000).toStringAsFixed(0)} MHz'}'
-              '${status.deviceGpuSource == null ? '' : ' · ${status.deviceGpuSource}'}',
+              '${status.deviceGpuPercent == null || status.deviceGpuSource == null ? '' : ' · ${status.deviceGpuSource}'}',
             ),
             Text(
               '内存：${usedMemory == null ? '未知' : _formatBytes(usedMemory)} 已用 / '

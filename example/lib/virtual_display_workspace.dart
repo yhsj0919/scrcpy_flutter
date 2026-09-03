@@ -21,11 +21,18 @@ class VirtualDisplayWorkspacePage extends StatefulWidget {
 
 class _VirtualDisplayWorkspacePageState
     extends State<VirtualDisplayWorkspacePage> {
+  final ScrcpyAudioFocusManager _audioFocus = ScrcpyAudioFocusManager();
   final List<_VirtualScreenDefinition> _screens = <_VirtualScreenDefinition>[];
   List<AdbApplication> _applications = const <AdbApplication>[];
   Object? _error;
   bool _loading = true;
   int _nextId = 1;
+
+  @override
+  void dispose() {
+    _audioFocus.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -135,6 +142,7 @@ class _VirtualDisplayWorkspacePageState
                                 device: widget.device,
                                 definition: screen,
                                 applications: _applications,
+                                audioFocus: _audioFocus,
                                 onClose: () =>
                                     setState(() => _screens.remove(screen)),
                               ),
@@ -166,6 +174,7 @@ final class _VirtualScreenDefinition {
     required this.dpi,
     required this.systemDecorations,
     required this.moveContentToMain,
+    required this.audioEnabled,
   });
 
   final int id;
@@ -175,6 +184,7 @@ final class _VirtualScreenDefinition {
   final int dpi;
   final bool systemDecorations;
   final bool moveContentToMain;
+  final bool audioEnabled;
 }
 
 class _CreateVirtualScreenDialog extends StatefulWidget {
@@ -199,6 +209,7 @@ class _CreateVirtualScreenDialogState
   final _dpi = TextEditingController(text: '240');
   bool _systemDecorations = false;
   bool _moveContentToMain = false;
+  bool _audioEnabled = true;
   Object? _error;
 
   @override
@@ -236,6 +247,7 @@ class _CreateVirtualScreenDialogState
           dpi: dpi,
           systemDecorations: _systemDecorations,
           moveContentToMain: _moveContentToMain,
+          audioEnabled: _audioEnabled,
         ),
       );
     } catch (error) {
@@ -293,6 +305,13 @@ class _CreateVirtualScreenDialogState
               value: _moveContentToMain,
               onChanged: (value) => setState(() => _moveContentToMain = value),
             ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('将设备音频转发到电脑'),
+              subtitle: const Text('使用与主界面相同的播放捕获；音频属于整台设备，不保证只包含此虚拟屏应用'),
+              value: _audioEnabled,
+              onChanged: (value) => setState(() => _audioEnabled = value),
+            ),
             if (_error case final error?)
               Text(
                 '$error',
@@ -325,6 +344,7 @@ class _VirtualDisplayTile extends StatefulWidget {
     required this.device,
     required this.definition,
     required this.applications,
+    required this.audioFocus,
     required this.onClose,
     super.key,
   });
@@ -333,6 +353,7 @@ class _VirtualDisplayTile extends StatefulWidget {
   final AdbDevice device;
   final _VirtualScreenDefinition definition;
   final List<AdbApplication> applications;
+  final ScrcpyAudioFocusManager audioFocus;
   final VoidCallback onClose;
 
   @override
@@ -341,26 +362,41 @@ class _VirtualDisplayTile extends StatefulWidget {
 
 class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
   late final ScrcpySession _session;
+  StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
+  Future<void> _connectionChange = Future<void>.value();
   ScrcpyVideoController? _video;
   ScrcpyInputController? _input;
   ScrcpyAdaptiveDisplayController? _adaptiveDisplay;
+  ScrcpyAudioController? _audio;
+  Object? _audioError;
   Object? _error;
+  bool _disposing = false;
   late int _width = widget.definition.width;
   late int _height = widget.definition.height;
   int? _videoWidth;
   int? _videoHeight;
+  int _reconnectCount = 0;
   late AdbApplication _application = widget.definition.application;
   // Respect the explicitly requested creation size. Flex display remains
   // available, but preview-driven resizing is opt-in per tile.
   bool _autoFit = false;
+  late final String _audioFocusId =
+      '${widget.device.serial}:${widget.definition.id}';
 
   @override
   void initState() {
     super.initState();
+    widget.audioFocus.addListener(_handleAudioFocusChanged);
     _session = widget.client.createSession(
       ScrcpySessionConfiguration(
         deviceSerial: widget.device.serial,
         video: ScrcpyVideoOptions(maxSize: _width > _height ? _width : _height),
+        audioEnabled: widget.definition.audioEnabled,
+        audio: const ScrcpyAudioOptions(
+          codec: ScrcpyAudioCodec.opus,
+          source: ScrcpyAudioSource.playback,
+          duplicateOnDevice: false,
+        ),
         displaySource: ScrcpyDisplaySource.virtual(
           width: _width,
           height: _height,
@@ -373,15 +409,91 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
           flexDisplay: true,
           launchApplication: ScrcpyApplicationLaunch(_application.packageName),
         ),
+        reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
       ),
     );
+    _reconnectSubscription = _session.reconnectedConnections.listen(
+      (connection) {
+        unawaited(_queueConnection(connection, isReconnect: true));
+      },
+      onError: (Object error) {
+        if (mounted) setState(() => _error = error);
+      },
+    );
     unawaited(_start());
+  }
+
+  void _handleAudioFocusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _handleAudioState() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _requestAudioFocus() async {
+    try {
+      await widget.audioFocus.tryRequestFocus(_audioFocusId);
+    } catch (error) {
+      if (mounted) setState(() => _audioError = error);
+    }
+  }
+
+  String get _audioLabel {
+    if (!widget.definition.audioEnabled) return '关闭';
+    if (_audioError != null) return '不可用';
+    final audio = _audio;
+    if (audio == null) return '连接中';
+    if (audio.value.status == ScrcpyAudioStatus.ended) return '已断开';
+    if (audio.value.status == ScrcpyAudioStatus.error) return '错误';
+    if (audio.value.packetsReceived == 0) return '等待数据';
+    if (audio.value.playedBuffers == 0) return '等待播放';
+    return widget.audioFocus.isFocused(_audioFocusId)
+        ? '电脑播放 ${audio.value.playedBuffers}'
+        : '已静音';
   }
 
   Future<void> _start() async {
     try {
       final connection = await _session.start();
-      final video = createNativeScrcpyVideoController(connection);
+      await _queueConnection(connection);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _queueConnection(
+    ScrcpyVideoConnection connection, {
+    bool isReconnect = false,
+  }) {
+    final operation = _connectionChange.catchError((Object _) {}).then((
+      _,
+    ) async {
+      if (_disposing) {
+        await connection.close();
+        return;
+      }
+      await _attachConnection(connection, isReconnect: isReconnect);
+    });
+    _connectionChange = operation;
+    return operation;
+  }
+
+  Future<void> _attachConnection(
+    ScrcpyVideoConnection connection, {
+    bool isReconnect = false,
+  }) async {
+    await _releaseControllers();
+    if (mounted && isReconnect) {
+      setState(() {
+        _videoWidth = null;
+        _videoHeight = null;
+      });
+    }
+    ScrcpyVideoController? video;
+    ScrcpyAudioController? audio;
+    try {
+      video = createNativeScrcpyVideoController(connection);
       await video.start();
       if (!mounted) {
         video.dispose();
@@ -391,6 +503,9 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
       setState(() {
         _video = video;
         _input = connection.input;
+        _error = null;
+        _audioError = null;
+        if (isReconnect) _reconnectCount++;
         final input = connection.input;
         if (input != null) {
           _adaptiveDisplay = ScrcpyAdaptiveDisplayController(
@@ -412,8 +527,75 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
       });
       video.addListener(_handleVideoState);
       _handleVideoState();
+      if (widget.definition.audioEnabled && connection.audio != null) {
+        audio = createNativeScrcpyAudioController(connection.audio!);
+        await audio.setMuted(true);
+        await audio.start();
+        await widget.audioFocus.register(
+          id: _audioFocusId,
+          controller: audio,
+          requestFocus: widget.audioFocus.focusedId == null,
+        );
+        if (!mounted) {
+          await widget.audioFocus.unregister(_audioFocusId);
+          await audio.stop();
+          audio.dispose();
+          return;
+        }
+        audio.addListener(_handleAudioState);
+        setState(() => _audio = audio);
+      } else if (widget.definition.audioEnabled && mounted) {
+        setState(() {
+          _audioError = StateError('scrcpy server 未提供音频流');
+        });
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = error);
+      if (!identical(_video, video)) {
+        try {
+          await video?.stop();
+        } catch (_) {}
+        video?.dispose();
+      }
+      if (!identical(_audio, audio)) {
+        try {
+          await audio?.stop();
+        } catch (_) {}
+        audio?.dispose();
+      }
+      if (mounted) {
+        setState(() {
+          if (_video == null) {
+            _error = error;
+          } else {
+            _audioError = error;
+          }
+        });
+      }
+    }
+  }
+
+  Future<void> _releaseControllers() async {
+    _adaptiveDisplay?.dispose();
+    _adaptiveDisplay = null;
+    final video = _video;
+    final audio = _audio;
+    _video = null;
+    _audio = null;
+    _input = null;
+    video?.removeListener(_handleVideoState);
+    audio?.removeListener(_handleAudioState);
+    await widget.audioFocus.unregister(_audioFocusId);
+    if (audio != null) {
+      try {
+        await audio.stop();
+      } catch (_) {}
+      audio.dispose();
+    }
+    if (video != null) {
+      try {
+        await video.stop();
+      } catch (_) {}
+      video.dispose();
     }
   }
 
@@ -481,12 +663,14 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
 
   @override
   void dispose() {
-    _adaptiveDisplay?.dispose();
-    final video = _video;
-    video?.removeListener(_handleVideoState);
-    if (video != null) unawaited(video.stop());
-    unawaited(_session.stop());
-    video?.dispose();
+    _disposing = true;
+    widget.audioFocus.removeListener(_handleAudioFocusChanged);
+    unawaited(_reconnectSubscription?.cancel());
+    final cleanup = _connectionChange
+        .catchError((Object _) {})
+        .then((_) => _releaseControllers());
+    _connectionChange = cleanup;
+    unawaited(cleanup);
     _session.dispose();
     super.dispose();
   }
@@ -503,12 +687,35 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
           subtitle: Text(
             '$_width×$_height / ${widget.definition.dpi} DPI'
             '${_videoWidth == null ? '' : ' · 视频 $_videoWidth×$_videoHeight'}'
+            '${_reconnectCount == 0 ? '' : ' · 重连 $_reconnectCount 次'}'
+            ' · 音频 $_audioLabel'
             ' · ${_autoFit ? '动态虚拟屏' : '固定虚拟屏'}',
           ),
         ),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.end,
+        Wrap(
+          alignment: WrapAlignment.end,
           children: <Widget>[
+            IconButton(
+              tooltip: _audio == null
+                  ? (!widget.definition.audioEnabled
+                        ? '未启用设备音频'
+                        : _audioError == null
+                        ? '正在连接设备音频'
+                        : '设备音频不可用')
+                  : widget.audioFocus.isFocused(_audioFocusId)
+                  ? '当前音频焦点'
+                  : '切换到此窗口的设备音频',
+              onPressed: _audio == null
+                  ? null
+                  : () => unawaited(_requestAudioFocus()),
+              icon: Icon(
+                _audioError != null
+                    ? Icons.volume_off
+                    : widget.audioFocus.isFocused(_audioFocusId)
+                    ? Icons.volume_up
+                    : Icons.volume_mute,
+              ),
+            ),
             PopupMenuButton<AdbApplication>(
               tooltip: '切换应用',
               icon: const Icon(Icons.apps),
@@ -550,50 +757,56 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
             ),
           ],
         ),
-        AspectRatio(
-          aspectRatio: (_videoWidth ?? _width) / (_videoHeight ?? _height),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              if (_autoFit &&
-                  constraints.hasBoundedWidth &&
-                  constraints.hasBoundedHeight) {
-                _adaptiveDisplay?.updatePreview(
-                  Size(
-                    constraints.maxWidth *
-                        MediaQuery.devicePixelRatioOf(context),
-                    constraints.maxHeight *
-                        MediaQuery.devicePixelRatioOf(context),
-                  ),
+        Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: _audio == null
+              ? null
+              : (_) => unawaited(_requestAudioFocus()),
+          child: AspectRatio(
+            aspectRatio: (_videoWidth ?? _width) / (_videoHeight ?? _height),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                if (_autoFit &&
+                    constraints.hasBoundedWidth &&
+                    constraints.hasBoundedHeight) {
+                  _adaptiveDisplay?.updatePreview(
+                    Size(
+                      constraints.maxWidth *
+                          MediaQuery.devicePixelRatioOf(context),
+                      constraints.maxHeight *
+                          MediaQuery.devicePixelRatioOf(context),
+                    ),
+                  );
+                }
+                return ColoredBox(
+                  color: const Color(0xff101218),
+                  child: _error != null
+                      ? Center(child: Text('$_error'))
+                      : _video == null
+                      ? const Center(child: CircularProgressIndicator())
+                      : ValueListenableBuilder<ScrcpyVideoState>(
+                          valueListenable: _video!,
+                          builder: (context, state, _) {
+                            final view = ScrcpyVideoView(controller: _video!);
+                            final input = _input;
+                            if (input == null ||
+                                state.width == null ||
+                                state.height == null) {
+                              return view;
+                            }
+                            return ScrcpyInputLayer(
+                              controller: input,
+                              videoSize: Size(
+                                state.width!.toDouble(),
+                                state.height!.toDouble(),
+                              ),
+                              child: view,
+                            );
+                          },
+                        ),
                 );
-              }
-              return ColoredBox(
-                color: const Color(0xff101218),
-                child: _error != null
-                    ? Center(child: Text('$_error'))
-                    : _video == null
-                    ? const Center(child: CircularProgressIndicator())
-                    : ValueListenableBuilder<ScrcpyVideoState>(
-                        valueListenable: _video!,
-                        builder: (context, state, _) {
-                          final view = ScrcpyVideoView(controller: _video!);
-                          final input = _input;
-                          if (input == null ||
-                              state.width == null ||
-                              state.height == null) {
-                            return view;
-                          }
-                          return ScrcpyInputLayer(
-                            controller: input,
-                            videoSize: Size(
-                              state.width!.toDouble(),
-                              state.height!.toDouble(),
-                            ),
-                            child: view,
-                          );
-                        },
-                      ),
-              );
-            },
+              },
+            ),
           ),
         ),
       ],

@@ -70,13 +70,16 @@ final class ScrcpyClient {
         ], allowMalformed: true),
       );
       if (labels.isEmpty) return applications;
-      final enriched = <AdbApplication>[
-        for (final application in applications)
-          application.copyWith(name: labels[application.packageName]),
-      ]..sort((a, b) {
-        final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
-        return byName != 0 ? byName : a.packageName.compareTo(b.packageName);
-      });
+      final enriched =
+          <AdbApplication>[
+            for (final application in applications)
+              application.copyWith(name: labels[application.packageName]),
+          ]..sort((a, b) {
+            final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+            return byName != 0
+                ? byName
+                : a.packageName.compareTo(b.packageName);
+          });
       return List<AdbApplication>.unmodifiable(enriched);
     } catch (_) {
       return applications;
