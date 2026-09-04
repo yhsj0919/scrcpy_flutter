@@ -1,4 +1,5 @@
 import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
@@ -25,6 +26,11 @@ abstract final class ScrcpyAndroidKeyCode {
   static const forwardDelete = 112;
   static const appSwitch = 187;
   static const wakeUp = 224;
+}
+
+/// Well-known pointer identifiers defined by the scrcpy control protocol.
+abstract final class ScrcpyPointerId {
+  static const mouse = 0xffffffffffffffff;
 }
 
 final class ScrcpyPointerEvent {
@@ -64,6 +70,7 @@ final class ScrcpyCoordinateMapper {
     required Size videoSize,
     BoxFit fit = BoxFit.contain,
     Alignment alignment = Alignment.center,
+    double edgeThreshold = 0,
   }) {
     if (widgetSize.isEmpty ||
         videoSize.isEmpty ||
@@ -72,7 +79,10 @@ final class ScrcpyCoordinateMapper {
         !videoSize.width.isFinite ||
         !videoSize.height.isFinite ||
         !localPosition.dx.isFinite ||
-        !localPosition.dy.isFinite) {
+        !localPosition.dy.isFinite ||
+        !edgeThreshold.isFinite ||
+        edgeThreshold < 0 ||
+        edgeThreshold > 0.1) {
       return null;
     }
     final fitted = applyBoxFit(fit, videoSize, widgetSize);
@@ -86,10 +96,18 @@ final class ScrcpyCoordinateMapper {
     }
     final dx = (localPosition.dx - destination.left) / destination.width;
     final dy = (localPosition.dy - destination.top) / destination.height;
-    return Offset(
+    final mapped = Offset(
       (source.left + dx * source.width) / videoSize.width,
       (source.top + dy * source.height) / videoSize.height,
     );
+    if (edgeThreshold == 0) return mapped;
+    double snap(double value) {
+      if (value <= edgeThreshold) return 0;
+      if (value >= 1 - edgeThreshold) return 1;
+      return value;
+    }
+
+    return Offset(snap(mapped.dx), snap(mapped.dy));
   }
 }
 
@@ -114,6 +132,12 @@ abstract interface class ScrcpyInputController {
 
   /// Updates the Android clipboard and waits for the server acknowledgement.
   Future<void> setClipboard(String text, {bool paste = false});
+}
+
+/// Optional scrcpy desktop navigation command implemented by control-channel
+/// input controllers. It performs Back while the screen is on, or wakes it.
+abstract interface class ScrcpyScreenPowerInputController {
+  Future<void> sendBackOrScreenOn({bool down = true});
 }
 
 /// Sends synthetic multi-pointer gestures through a scrcpy control channel.
@@ -222,7 +246,7 @@ final class ScrcpyGestureSimulator {
 
 /// Captures Flutter pointer events above a video surface. Coordinates are
 /// normalized here; exact video/letterbox mapping is implemented in P3.
-final class ScrcpyInputLayer extends StatelessWidget {
+final class ScrcpyInputLayer extends StatefulWidget {
   const ScrcpyInputLayer({
     required this.controller,
     required this.child,
@@ -232,8 +256,9 @@ final class ScrcpyInputLayer extends StatelessWidget {
     this.alignment = Alignment.center,
     this.autofocus = true,
     this.captureAllKeys = false,
+    this.gestureEdgeThreshold = 0.02,
     super.key,
-  });
+  }) : assert(gestureEdgeThreshold >= 0 && gestureEdgeThreshold <= 0.1);
 
   final ScrcpyInputController controller;
   final Widget child;
@@ -247,33 +272,50 @@ final class ScrcpyInputLayer extends StatelessWidget {
   /// this input layer owns keyboard focus.
   final bool captureAllKeys;
 
+  /// Snaps mouse presses near a video edge to its first or last physical
+  /// pixel so Android gesture navigation can reliably detect edge swipes.
+  final double gestureEdgeThreshold;
+
+  @override
+  State<ScrcpyInputLayer> createState() => _ScrcpyInputLayerState();
+}
+
+class _ScrcpyInputLayerState extends State<ScrcpyInputLayer> {
+  final Set<int> _activePrimaryMousePointers = <int>{};
+  final Map<int, Offset> _activePointerPositions = <int, Offset>{};
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) => Focus(
-      autofocus: autofocus,
-      onKeyEvent: enabled
-          ? (_, event) => (_sendKey(event) || captureAllKeys)
+      autofocus: widget.autofocus,
+      onKeyEvent: widget.enabled
+          ? (_, event) => (_sendKey(event) || widget.captureAllKeys)
                 ? KeyEventResult.handled
                 : KeyEventResult.ignored
           : null,
       child: Listener(
         behavior: HitTestBehavior.opaque,
-        onPointerDown: enabled
-            ? (event) => _send(event, ScrcpyPointerAction.down, constraints)
+        onPointerDown: widget.enabled
+            ? (event) => _handlePointerDown(event, constraints)
             : null,
-        onPointerMove: enabled
-            ? (event) => _send(event, ScrcpyPointerAction.move, constraints)
+        onPointerMove: widget.enabled
+            ? (event) => _handlePointerMove(event, constraints)
             : null,
-        onPointerUp: enabled
-            ? (event) => _send(event, ScrcpyPointerAction.up, constraints)
+        onPointerUp: widget.enabled
+            ? (event) =>
+                  _handlePointerEnd(event, ScrcpyPointerAction.up, constraints)
             : null,
-        onPointerCancel: enabled
-            ? (event) => _send(event, ScrcpyPointerAction.cancel, constraints)
+        onPointerCancel: widget.enabled
+            ? (event) => _handlePointerEnd(
+                event,
+                ScrcpyPointerAction.cancel,
+                constraints,
+              )
             : null,
-        onPointerHover: enabled
+        onPointerHover: widget.enabled
             ? (event) => _send(event, ScrcpyPointerAction.hover, constraints)
             : null,
-        onPointerSignal: enabled
+        onPointerSignal: widget.enabled
             ? (event) {
                 if (event is PointerScrollEvent) {
                   _send(
@@ -285,10 +327,70 @@ final class ScrcpyInputLayer extends StatelessWidget {
                 }
               }
             : null,
-        child: child,
+        child: widget.child,
       ),
     ),
   );
+
+  void _handlePointerDown(PointerDownEvent event, BoxConstraints constraints) {
+    if (event.kind == PointerDeviceKind.mouse) {
+      if (event.buttons == kMiddleMouseButton) {
+        _sendKeyClick(ScrcpyAndroidKeyCode.home);
+        return;
+      }
+      if (event.buttons == kSecondaryMouseButton) {
+        _sendBackOrScreenOnClick();
+        return;
+      }
+      if (event.buttons != kPrimaryMouseButton) return;
+      if (_activePrimaryMousePointers.isNotEmpty) {
+        if (kDebugMode) {
+          debugPrint('scrcpy input: cancelling a stale mouse touch');
+        }
+        _send(event, ScrcpyPointerAction.cancel, constraints);
+        _activePrimaryMousePointers.clear();
+      }
+      _activePrimaryMousePointers.add(event.pointer);
+    }
+    _send(event, ScrcpyPointerAction.down, constraints);
+  }
+
+  void _handlePointerMove(PointerMoveEvent event, BoxConstraints constraints) {
+    if (event.kind == PointerDeviceKind.mouse &&
+        !_activePrimaryMousePointers.contains(event.pointer)) {
+      return;
+    }
+    _send(event, ScrcpyPointerAction.move, constraints);
+  }
+
+  void _handlePointerEnd(
+    PointerEvent event,
+    ScrcpyPointerAction action,
+    BoxConstraints constraints,
+  ) {
+    if (event.kind == PointerDeviceKind.mouse) {
+      if (_activePrimaryMousePointers.isEmpty) return;
+      _activePrimaryMousePointers.clear();
+    }
+    _send(event, action, constraints);
+  }
+
+  void _sendKeyClick(int keyCode) {
+    widget.controller.sendKey(keyCode: keyCode);
+    widget.controller.sendKey(keyCode: keyCode, down: false);
+  }
+
+  void _sendBackOrScreenOnClick() {
+    final controller = widget.controller;
+    if (controller is ScrcpyScreenPowerInputController) {
+      final screenPowerController =
+          controller as ScrcpyScreenPowerInputController;
+      screenPowerController.sendBackOrScreenOn();
+      screenPowerController.sendBackOrScreenOn(down: false);
+    } else {
+      _sendKeyClick(ScrcpyAndroidKeyCode.back);
+    }
+  }
 
   bool _sendKey(KeyEvent event) {
     final keyboard = HardwareKeyboard.instance;
@@ -299,7 +401,7 @@ final class ScrcpyInputLayer extends StatelessWidget {
     }
     final keyCode = _androidKeyCode(event.logicalKey);
     if (keyCode == null || event is KeyRepeatEvent) return false;
-    controller.sendKey(keyCode: keyCode, down: event is KeyDownEvent);
+    widget.controller.sendKey(keyCode: keyCode, down: event is KeyDownEvent);
     return true;
   }
 
@@ -309,6 +411,9 @@ final class ScrcpyInputLayer extends StatelessWidget {
     BoxConstraints constraints, {
     Offset scrollDelta = Offset.zero,
   }) {
+    final pointerId = event.kind == PointerDeviceKind.mouse
+        ? ScrcpyPointerId.mouse
+        : event.pointer;
     final width = constraints.maxWidth;
     final height = constraints.maxHeight;
     if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
@@ -318,24 +423,46 @@ final class ScrcpyInputLayer extends StatelessWidget {
       event.localPosition.dx / width,
       event.localPosition.dy / height,
     );
-    final currentVideoSize = videoSize;
+    final currentVideoSize = widget.videoSize;
     if (currentVideoSize != null) {
       final mapped = ScrcpyCoordinateMapper.map(
         localPosition: event.localPosition,
         widgetSize: Size(width, height),
         videoSize: currentVideoSize,
-        fit: fit,
-        alignment: alignment,
+        fit: widget.fit,
+        alignment: widget.alignment,
+        edgeThreshold:
+            event.kind == PointerDeviceKind.mouse &&
+                action == ScrcpyPointerAction.down
+            ? widget.gestureEdgeThreshold
+            : 0,
       );
-      if (mapped == null) return;
-      normalized = mapped;
+      if (mapped == null) {
+        final lastPosition = _activePointerPositions[pointerId];
+        if (lastPosition == null ||
+            (action != ScrcpyPointerAction.up &&
+                action != ScrcpyPointerAction.cancel)) {
+          return;
+        }
+        normalized = lastPosition;
+      } else {
+        normalized = mapped;
+      }
     }
-    controller.sendPointer(
+    normalized = Offset(normalized.dx.clamp(0, 1), normalized.dy.clamp(0, 1));
+    if (action == ScrcpyPointerAction.down ||
+        action == ScrcpyPointerAction.move) {
+      _activePointerPositions[pointerId] = normalized;
+    } else if (action == ScrcpyPointerAction.up ||
+        action == ScrcpyPointerAction.cancel) {
+      _activePointerPositions.remove(pointerId);
+    }
+    widget.controller.sendPointer(
       ScrcpyPointerEvent(
-        pointerId: event.pointer,
+        pointerId: pointerId,
         action: action,
-        normalizedX: normalized.dx.clamp(0, 1),
-        normalizedY: normalized.dy.clamp(0, 1),
+        normalizedX: normalized.dx,
+        normalizedY: normalized.dy,
         buttons: event.buttons,
         videoWidth: currentVideoSize?.width.round(),
         videoHeight: currentVideoSize?.height.round(),

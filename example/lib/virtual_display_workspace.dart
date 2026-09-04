@@ -4,6 +4,8 @@ import 'package:adb_client/adb_client.dart';
 import 'package:flutter/material.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
+import 'virtual_display_defaults.dart';
+
 class VirtualDisplayWorkspacePage extends StatefulWidget {
   const VirtualDisplayWorkspacePage({
     required this.client,
@@ -24,6 +26,7 @@ class _VirtualDisplayWorkspacePageState
   final ScrcpyAudioFocusManager _audioFocus = ScrcpyAudioFocusManager();
   final List<_VirtualScreenDefinition> _screens = <_VirtualScreenDefinition>[];
   List<AdbApplication> _applications = const <AdbApplication>[];
+  VirtualDisplayDefaults _displayDefaults = VirtualDisplayDefaults.fallback;
   Object? _error;
   bool _loading = true;
   int _nextId = 1;
@@ -42,9 +45,11 @@ class _VirtualDisplayWorkspacePageState
 
   Future<void> _loadApplications() async {
     try {
+      final defaultsFuture = _loadDisplayDefaults();
       final applications = await widget.client.listApplications(
         widget.device.serial,
       );
+      final defaults = await defaultsFuture;
       if (!mounted) return;
       setState(() {
         _applications = applications
@@ -52,6 +57,7 @@ class _VirtualDisplayWorkspacePageState
               (application) => application.enabled && application.launchable,
             )
             .toList(growable: false);
+        _displayDefaults = defaults;
         _loading = false;
       });
     } catch (error) {
@@ -64,11 +70,24 @@ class _VirtualDisplayWorkspacePageState
     }
   }
 
+  Future<VirtualDisplayDefaults> _loadDisplayDefaults() async {
+    try {
+      final details = await AdbToolkit(widget.client.adbClient)
+          .getDeviceDetails(widget.device);
+      return VirtualDisplayDefaults.fromDeviceDetails(details);
+    } catch (_) {
+      return VirtualDisplayDefaults.fallback;
+    }
+  }
+
   Future<void> _addScreen() async {
     final definition = await showDialog<_VirtualScreenDefinition>(
       context: context,
-      builder: (_) =>
-          _CreateVirtualScreenDialog(applications: _applications, id: _nextId),
+      builder: (_) => _CreateVirtualScreenDialog(
+        applications: _applications,
+        id: _nextId,
+        defaults: _displayDefaults,
+      ),
     );
     if (!mounted || definition == null) return;
     setState(() {
@@ -191,10 +210,12 @@ class _CreateVirtualScreenDialog extends StatefulWidget {
   const _CreateVirtualScreenDialog({
     required this.applications,
     required this.id,
+    required this.defaults,
   });
 
   final List<AdbApplication> applications;
   final int id;
+  final VirtualDisplayDefaults defaults;
 
   @override
   State<_CreateVirtualScreenDialog> createState() =>
@@ -204,9 +225,9 @@ class _CreateVirtualScreenDialog extends StatefulWidget {
 class _CreateVirtualScreenDialogState
     extends State<_CreateVirtualScreenDialog> {
   late AdbApplication _application = widget.applications.first;
-  final _width = TextEditingController(text: '1280');
-  final _height = TextEditingController(text: '720');
-  final _dpi = TextEditingController(text: '240');
+  late final _width = TextEditingController(text: '${widget.defaults.width}');
+  late final _height = TextEditingController(text: '${widget.defaults.height}');
+  late final _dpi = TextEditingController(text: '${widget.defaults.dpi}');
   bool _systemDecorations = false;
   bool _moveContentToMain = false;
   bool _audioEnabled = true;

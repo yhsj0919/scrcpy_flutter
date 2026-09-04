@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -475,20 +476,36 @@ class NativeAudioPlayer {
            !peak_sample_.compare_exchange_weak(previous_peak, peak)) {
     }
     ++decoded_packets_;
+    // waveOutSetVolume() is not reliably scoped to one HWAVEOUT stream. Some
+    // drivers apply it to the whole output device, so unmuting one scrcpy
+    // session may also unmute every other session. Keep gain control inside
+    // this player instead.
+    if (muted_) return;
+    if (volume_ < 1.0) {
+      for (int i = 0; i < samples * 2; ++i) {
+        pcm[i] = static_cast<opus_int16>(
+            std::lround(static_cast<double>(pcm[i]) * volume_));
+      }
+    }
     WritePcm(reinterpret_cast<const uint8_t*>(pcm.data()),
              static_cast<DWORD>(samples * 2 * sizeof(opus_int16)));
   }
 
   void SetMuted(bool muted) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (muted_ == muted) return;
     muted_ = muted;
-    ApplyVolume();
+    if (muted_ && wave_out_) {
+      // Drop audio already queued for this stream so focus changes take
+      // effect immediately instead of leaking the previous session briefly.
+      waveOutReset(wave_out_);
+      ReclaimBuffers(true);
+    }
   }
 
   void SetVolume(double volume) {
     std::lock_guard<std::mutex> lock(mutex_);
     volume_ = std::clamp(volume, 0.0, 1.0);
-    ApplyVolume();
   }
 
   int64_t decoded_packets() const { return decoded_packets_; }
@@ -516,7 +533,9 @@ class NativeAudioPlayer {
     if (result != MMSYSERR_NOERROR) {
       throw std::runtime_error("Unable to open Windows audio output");
     }
-    ApplyVolume();
+    // Normalize a possibly retained legacy waveOut device volume. Per-stream
+    // volume and mute are applied to PCM samples in Decode().
+    waveOutSetVolume(wave_out_, 0xffffffff);
   }
 
   void WritePcm(const uint8_t* bytes, DWORD length) {
@@ -553,14 +572,6 @@ class NativeAudioPlayer {
       ++played_buffers_;
       buffers_.pop_front();
     }
-  }
-
-  void ApplyVolume() {
-    if (!wave_out_) return;
-    const DWORD level = muted_
-                            ? 0
-                            : static_cast<DWORD>(volume_ * 65535.0);
-    waveOutSetVolume(wave_out_, level | (level << 16));
   }
 
   int32_t bit_rate_;
@@ -605,9 +616,17 @@ ScrcpyFlutterPlugin::~ScrcpyFlutterPlugin() {
   if (texture_registrar_) {
     for (auto& entry : videos_) {
       entry.second->StopConversion();
-      texture_registrar_->UnregisterTexture(entry.first);
+      // Unregistration is asynchronous on Windows. Keep the texture and its
+      // PixelBuffer callback alive until the render thread has stopped using
+      // them; destroying it immediately is a use-after-free during concurrent
+      // multi-session disconnects.
+      auto retired = std::shared_ptr<NativeVideoTexture>(
+          std::move(entry.second));
+      texture_registrar_->UnregisterTexture(
+          entry.first, [retired]() {});
     }
   }
+  videos_.clear();
 }
 
 std::string SafeErrorMessage(const std::exception& error) {
@@ -760,8 +779,17 @@ void ScrcpyFlutterPlugin::HandleVideoMethodCall(
       auto video = videos_.find(id);
       if (video != videos_.end()) {
         video->second->StopConversion();
-        texture_registrar_->UnregisterTexture(id);
+        auto retired = std::shared_ptr<NativeVideoTexture>(
+            std::move(video->second));
         videos_.erase(video);
+        auto pending_result =
+            std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(
+                std::move(result));
+        texture_registrar_->UnregisterTexture(
+            id, [retired, pending_result]() {
+              pending_result->Success();
+            });
+        return;
       }
       result->Success();
     } else {

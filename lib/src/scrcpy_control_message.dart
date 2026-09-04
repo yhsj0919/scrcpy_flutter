@@ -11,6 +11,7 @@ final class ScrcpyControlMessageSerializer {
   static const int injectText = 1;
   static const int injectTouch = 2;
   static const int injectScroll = 3;
+  static const int backOrScreenOnType = 4;
   static const int getClipboardType = 8;
   static const int setClipboardType = 9;
   static const int startApplicationType = 16;
@@ -31,6 +32,9 @@ final class ScrcpyControlMessageSerializer {
       ..setUint32(10, metaState, Endian.big);
     return data.buffer.asUint8List();
   }
+
+  static Uint8List backOrScreenOn({required bool down}) =>
+      Uint8List.fromList(<int>[backOrScreenOnType, down ? 0 : 1]);
 
   static Uint8List text(String value) {
     final payload = utf8.encode(value);

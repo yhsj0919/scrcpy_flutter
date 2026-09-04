@@ -184,6 +184,19 @@ class FirstThenFailVideoConnector implements ScrcpyVideoConnector {
   }
 }
 
+class AlwaysFailVideoConnector implements ScrcpyVideoConnector {
+  var calls = 0;
+
+  @override
+  Future<ScrcpyVideoConnection> connect(
+    ScrcpySessionConfiguration configuration, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    calls++;
+    throw StateError('injected session failure');
+  }
+}
+
 class FakeSessionVideoConnection implements ScrcpyVideoConnection {
   @override
   ScrcpyAudioStream? get audio => null;
@@ -466,6 +479,39 @@ malformed line
     expect(session.state.value, ScrcpySessionState.error);
     await session.stop();
     session.dispose();
+  });
+
+  test('one startup failure does not affect another session', () async {
+    final failedConnector = AlwaysFailVideoConnector();
+    final healthyConnector = RepeatingVideoConnector();
+    final failed = ScrcpySession(
+      adbDeviceService: FakeAdbClient(),
+      configuration: const ScrcpySessionConfiguration(
+        deviceSerial: 'test-device',
+      ),
+      videoConnector: failedConnector,
+    );
+    final healthy = ScrcpySession(
+      adbDeviceService: FakeAdbClient(),
+      configuration: const ScrcpySessionConfiguration(
+        deviceSerial: 'test-device',
+      ),
+      videoConnector: healthyConnector,
+    );
+
+    await expectLater(failed.start(), throwsStateError);
+    final healthyConnection = await healthy.start();
+
+    expect(failed.state.value, ScrcpySessionState.error);
+    expect(healthy.state.value, ScrcpySessionState.streaming);
+    expect(failedConnector.calls, 1);
+    expect(healthyConnector.connections, hasLength(1));
+    expect(healthyConnector.connections.single, same(healthyConnection));
+
+    await failed.stop();
+    await healthy.stop();
+    failed.dispose();
+    healthy.dispose();
   });
 
   test('reconnect policy validates its retry bounds and backoff', () {

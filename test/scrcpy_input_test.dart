@@ -6,9 +6,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
-final class FakeInputController implements ScrcpyInputController {
+final class FakeInputController
+    implements ScrcpyInputController, ScrcpyScreenPowerInputController {
   final List<ScrcpyPointerEvent> events = <ScrcpyPointerEvent>[];
   final List<(int, bool)> keys = <(int, bool)>[];
+  final List<bool> backOrScreenOnActions = <bool>[];
   final StreamController<String> clipboard = StreamController<String>();
 
   @override
@@ -22,6 +24,11 @@ final class FakeInputController implements ScrcpyInputController {
   @override
   Future<void> sendKey({required int keyCode, bool down = true}) async {
     keys.add((keyCode, down));
+  }
+
+  @override
+  Future<void> sendBackOrScreenOn({bool down = true}) async {
+    backOrScreenOnActions.add(down);
   }
 
   @override
@@ -347,6 +354,114 @@ void main() {
     expect(controller.events.last.action, ScrcpyPointerAction.up);
   });
 
+  testWidgets('mouse buttons follow scrcpy desktop navigation mapping', (
+    tester,
+  ) async {
+    final controller = FakeInputController();
+    await tester.pumpWidget(
+      Center(
+        child: ScrcpyInputLayer(
+          controller: controller,
+          child: const SizedBox(width: 200, height: 100),
+        ),
+      ),
+    );
+    final center = tester.getCenter(find.byType(ScrcpyInputLayer));
+
+    Future<void> click(int pointer, int buttons) async {
+      await tester.sendEventToBinding(
+        PointerDownEvent(
+          pointer: pointer,
+          kind: PointerDeviceKind.mouse,
+          position: center,
+          buttons: buttons,
+        ),
+      );
+      await tester.sendEventToBinding(
+        PointerUpEvent(
+          pointer: pointer,
+          kind: PointerDeviceKind.mouse,
+          position: center,
+        ),
+      );
+    }
+
+    await click(41, kMiddleMouseButton);
+    await click(42, kSecondaryMouseButton);
+
+    expect(controller.keys, <(int, bool)>[
+      (ScrcpyAndroidKeyCode.home, true),
+      (ScrcpyAndroidKeyCode.home, false),
+    ]);
+    expect(controller.backOrScreenOnActions, <bool>[true, false]);
+    expect(controller.events, isEmpty);
+
+    await click(43, kPrimaryMouseButton);
+    expect(
+      controller.events.map((event) => event.action),
+      <ScrcpyPointerAction>[ScrcpyPointerAction.down, ScrcpyPointerAction.up],
+    );
+    expect(controller.events.map((event) => event.pointerId).toSet(), <int>{
+      ScrcpyPointerId.mouse,
+    });
+  });
+
+  testWidgets('a new mouse down cancels a stale injected touch', (
+    tester,
+  ) async {
+    final controller = FakeInputController();
+    await tester.pumpWidget(
+      Center(
+        child: ScrcpyInputLayer(
+          controller: controller,
+          child: const SizedBox(width: 200, height: 100),
+        ),
+      ),
+    );
+    final center = tester.getCenter(find.byType(ScrcpyInputLayer));
+
+    for (final pointer in <int>[51, 52]) {
+      await tester.sendEventToBinding(
+        PointerDownEvent(
+          pointer: pointer,
+          kind: PointerDeviceKind.mouse,
+          position: center,
+          buttons: kPrimaryMouseButton,
+        ),
+      );
+    }
+
+    expect(
+      controller.events.map((event) => event.action),
+      <ScrcpyPointerAction>[
+        ScrcpyPointerAction.down,
+        ScrcpyPointerAction.cancel,
+        ScrcpyPointerAction.down,
+      ],
+    );
+    expect(controller.events.map((event) => event.pointerId).toSet(), <int>{
+      ScrcpyPointerId.mouse,
+    });
+  });
+
+  test('coordinate mapper snaps gesture starts to physical edges', () {
+    final bottom = ScrcpyCoordinateMapper.map(
+      localPosition: const Offset(100, 99),
+      widgetSize: const Size(200, 100),
+      videoSize: const Size(1000, 500),
+      edgeThreshold: 0.02,
+    );
+    final left = ScrcpyCoordinateMapper.map(
+      localPosition: const Offset(3, 50),
+      widgetSize: const Size(200, 100),
+      videoSize: const Size(1000, 500),
+      edgeThreshold: 0.02,
+    );
+
+    expect(bottom, const Offset(0.5, 1));
+    expect(left, const Offset(0, 0.5));
+  });
+
   testWidgets('disabled input layer does not emit events', (tester) async {
     final controller = FakeInputController();
     await tester.pumpWidget(
@@ -419,6 +534,36 @@ void main() {
       isTrue,
     );
     expect(controller.events.last.action, ScrcpyPointerAction.up);
+  });
+
+  testWidgets('pointer released in letterbox uses its last video position', (
+    tester,
+  ) async {
+    final controller = FakeInputController();
+    await tester.pumpWidget(
+      Center(
+        child: SizedBox.square(
+          dimension: 400,
+          child: ScrcpyInputLayer(
+            controller: controller,
+            videoSize: const Size(200, 400),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+    final bounds = tester.getRect(find.byType(ScrcpyInputLayer));
+    final gesture = await tester.startGesture(bounds.center, pointer: 71);
+    await gesture.moveTo(bounds.centerLeft + const Offset(20, 0));
+    await gesture.up();
+
+    expect(
+      controller.events.map((event) => event.action),
+      <ScrcpyPointerAction>[ScrcpyPointerAction.down, ScrcpyPointerAction.up],
+    );
+    expect(controller.events.first.normalizedX, closeTo(0.5, 0.001));
+    expect(controller.events.last.normalizedX, closeTo(0.5, 0.001));
+    expect(controller.events.last.normalizedY, closeTo(0.5, 0.001));
   });
 
   testWidgets('input layer emits pointer scroll deltas', (tester) async {

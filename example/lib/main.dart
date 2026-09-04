@@ -5,6 +5,7 @@ import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
 import 'device_wall.dart';
+import 'virtual_display_defaults.dart';
 import 'virtual_display_workspace.dart';
 
 extension on ScrcpyClient {
@@ -1961,11 +1962,22 @@ class _DeviceApplicationsPageState extends State<DeviceApplicationsPage> {
     AdbApplication application, {
     bool forceStopFirst = false,
   }) async {
+    var defaults = VirtualDisplayDefaults.fallback;
+    try {
+      defaults = VirtualDisplayDefaults.fromDeviceDetails(
+        await widget.client.adbToolkit.getDeviceDetails(widget.device),
+      );
+    } catch (_) {
+      // Keep virtual display creation available when a vendor ROM does not
+      // expose display metrics to the shell user.
+    }
+    if (!mounted) return;
     final source = await showDialog<ScrcpyVirtualDisplaySource>(
       context: context,
       builder: (_) => _VirtualDisplayConfigurationDialog(
         application: application,
         forceStopFirst: forceStopFirst,
+        defaults: defaults,
       ),
     );
     if (!mounted || source == null) return;
@@ -2171,10 +2183,12 @@ class _VirtualDisplayConfigurationDialog extends StatefulWidget {
   const _VirtualDisplayConfigurationDialog({
     required this.application,
     required this.forceStopFirst,
+    required this.defaults,
   });
 
   final AdbApplication application;
   final bool forceStopFirst;
+  final VirtualDisplayDefaults defaults;
 
   @override
   State<_VirtualDisplayConfigurationDialog> createState() =>
@@ -2183,9 +2197,9 @@ class _VirtualDisplayConfigurationDialog extends StatefulWidget {
 
 class _VirtualDisplayConfigurationDialogState
     extends State<_VirtualDisplayConfigurationDialog> {
-  final _width = TextEditingController(text: '1280');
-  final _height = TextEditingController(text: '720');
-  final _dpi = TextEditingController(text: '240');
+  late final _width = TextEditingController(text: '${widget.defaults.width}');
+  late final _height = TextEditingController(text: '${widget.defaults.height}');
+  late final _dpi = TextEditingController(text: '${widget.defaults.dpi}');
   bool _systemDecorations = false;
   bool _keepActive = true;
   bool _moveContentToMain = false;

@@ -364,6 +364,11 @@ final class ScrcpySession {
     Object? error,
   ]) async {
     if (_disposed || _connection != connection || _stopRequested) return;
+    if (kDebugMode) {
+      debugPrint(
+        'scrcpy session disconnected${error == null ? '' : ': $error'}',
+      );
+    }
     _connection = null;
     _setState(ScrcpySessionState.disconnected);
     await connection.close();

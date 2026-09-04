@@ -1,7 +1,39 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 
 void main() {
+  test('serializes scrcpy BACK_OR_SCREEN_ON messages', () {
+    expect(ScrcpyControlMessageSerializer.backOrScreenOn(down: true), <int>[
+      4,
+      0,
+    ]);
+    expect(ScrcpyControlMessageSerializer.backOrScreenOn(down: false), <int>[
+      4,
+      1,
+    ]);
+  });
+
+  test('serializes the scrcpy well-known mouse pointer id', () {
+    final data = ScrcpyControlMessageSerializer.pointer(
+      const ScrcpyPointerEvent(
+        pointerId: ScrcpyPointerId.mouse,
+        action: ScrcpyPointerAction.down,
+        normalizedX: 0.5,
+        normalizedY: 0.5,
+        buttons: 1,
+      ),
+      videoWidth: 1080,
+      videoHeight: 1920,
+    );
+
+    expect(
+      ByteData.sublistView(data).getUint64(2, Endian.big),
+      0xffffffffffffffff,
+    );
+  });
+
   test('serializes the scrcpy 4.1 32-byte touch message', () {
     final bytes = ScrcpyControlMessageSerializer.pointer(
       const ScrcpyPointerEvent(

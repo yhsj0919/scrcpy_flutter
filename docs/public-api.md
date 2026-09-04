@@ -201,7 +201,7 @@ ScrcpyInputLayer(
 )
 ```
 
-输入层公开归一化 pointer、滚轮、按键和文本接口，并已在内部处理 contain/cover 黑边、旋转、DPI 和动态视频尺寸映射，不要求宿主重写 UI。`ScrcpyGestureSimulator` 可生成归一化双指缩放序列。
+输入层公开归一化 pointer、滚轮、按键和文本接口，并已在内部处理 contain/cover 黑边、旋转、DPI 和动态视频尺寸映射，不要求宿主重写 UI。鼠标默认与 scrcpy 桌面端一致：左键注入触摸，中键发送 Home，右键发送 `BACK_OR_SCREEN_ON`（亮屏时返回，熄屏时点亮）。默认将靠近视频四边 2% 范围的鼠标按下吸附到首/末物理像素，以便 Android 边缘手势识别；宿主可通过 `gestureEdgeThreshold` 调整或设为 0 关闭。`ScrcpyGestureSimulator` 可生成归一化双指缩放序列。
 
 ## 剪贴板
 

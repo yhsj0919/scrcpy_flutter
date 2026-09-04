@@ -128,4 +128,37 @@ void main() {
     await firstClose;
     manager.dispose();
   });
+
+  test('a failed device session does not change a healthy sibling', () async {
+    final manager = ScrcpySessionManager(
+      client: ScrcpyClient(
+        adbClient: _FakeAdbClient(<AdbDevice>[_device('healthy')]),
+      ),
+    );
+    final failed = manager.create(
+      const ScrcpySessionConfiguration(deviceSerial: 'missing'),
+      id: 'failed',
+    );
+    final healthy = manager.create(
+      const ScrcpySessionConfiguration(deviceSerial: 'healthy'),
+      id: 'healthy',
+    );
+
+    await expectLater(
+      manager.prepare(failed.id),
+      throwsA(isA<ScrcpyException>()),
+    );
+    await manager.prepare(healthy.id);
+
+    expect(failed.state.value, ScrcpySessionState.error);
+    expect(healthy.state.value, ScrcpySessionState.ready);
+    expect(manager.sessions, <ScrcpyManagedSession>[failed, healthy]);
+
+    expect(await manager.remove(failed.id), isTrue);
+    expect(manager.sessions, <ScrcpyManagedSession>[healthy]);
+    expect(healthy.state.value, ScrcpySessionState.ready);
+
+    await manager.close();
+    manager.dispose();
+  });
 }

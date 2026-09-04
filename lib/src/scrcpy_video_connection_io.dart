@@ -77,6 +77,8 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
     final socketName = 'scrcpy_$scid';
     String? local;
     AdbRunningCommand? serverProcess;
+    _IoScrcpyVideoConnection? connection;
+    var android11PopupStarted = false;
     try {
       await _adb.push(
         configuration.deviceSerial,
@@ -117,6 +119,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         configuration,
         cancellationToken: cancellationToken,
       );
+      android11PopupStarted = audioPreparation.popupStarted;
       final audioSource = configuration.audio.resolveSourceForAndroidSdk(
         audioPreparation.sdk,
       );
@@ -178,7 +181,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         controlEnabled: configuration.controlEnabled,
         cancellationToken: cancellationToken,
       );
-      final connection = _IoScrcpyVideoConnection(
+      connection = _IoScrcpyVideoConnection(
         _adb,
         configuration.deviceSerial,
         sockets.video,
@@ -237,19 +240,35 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
       }
       return connection;
     } catch (_) {
-      serverProcess?.kill();
-      if (local != null) {
+      if (android11PopupStarted) {
+        await _dismissAndroid11AudioPopup(configuration.deviceSerial);
+      }
+      final activeConnection = connection;
+      if (activeConnection != null) {
+        await _ignoreFailure(activeConnection.close());
+      } else {
+        serverProcess?.kill();
+        if (serverProcess != null) {
+          await _ignoreFailure(
+            serverProcess.exitCode.timeout(
+              const Duration(seconds: 2),
+              onTimeout: () => -1,
+            ),
+          );
+        }
+        if (local != null) {
+          await _ignoreFailure(
+            _adb.removeForward(configuration.deviceSerial, 'tcp:$local'),
+          );
+        }
         await _ignoreFailure(
-          _adb.removeForward(configuration.deviceSerial, 'tcp:$local'),
+          _adb.shell(configuration.deviceSerial, <String>[
+            'rm',
+            '-f',
+            remotePath,
+          ]),
         );
       }
-      await _ignoreFailure(
-        _adb.shell(configuration.deviceSerial, <String>[
-          'rm',
-          '-f',
-          remotePath,
-        ]),
-      );
       rethrow;
     }
   }
@@ -458,7 +477,10 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
     _audio = audioSocket == null ? null : _IoScrcpyAudioStream(audioSocket);
     _input = controlSocket == null
         ? null
-        : _IoScrcpyInputController(controlSocket);
+        : _IoScrcpyInputController(
+            controlSocket,
+            onTransportClosed: _handleControlTransportClosed,
+          );
     _parser = ScrcpyVideoPacketParser(
       onCodec: (codec) {
         if (!_codec.isCompleted) _codec.complete(codec);
@@ -542,6 +564,15 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
   bool _loggedFirstChunk = false;
   bool _closed = false;
 
+  void _handleControlTransportClosed(Object? error) {
+    if (_closed || _done.isCompleted) return;
+    if (error == null) {
+      _done.complete();
+    } else {
+      _done.completeError(error);
+    }
+  }
+
   @override
   final ScrcpyVideoConnectionInfo info;
 
@@ -577,13 +608,33 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
       await _ignoreFailure(_audio.close().timeout(const Duration(seconds: 2)));
     }
     await _ignoreFailure(_socket.close().timeout(const Duration(seconds: 2)));
-    _serverProcess.kill();
-    await _ignoreFailure(
-      _serverProcess.exitCode.timeout(
-        const Duration(seconds: 2),
-        onTimeout: () => -1,
-      ),
-    );
+    // Let scrcpy unwind normally after its sockets reach EOF. In particular,
+    // the server releases a new virtual display from its shutdown path. An
+    // immediate process kill may leave that display and its task behind on
+    // vendor ROMs (observed on Samsung). Fall back to killing only when the
+    // graceful shutdown window expires, such as after a real USB disconnect.
+    final serverExit = _serverProcess.exitCode;
+    var exitedGracefully = false;
+    try {
+      await serverExit.timeout(const Duration(seconds: 3));
+      exitedGracefully = true;
+      if (kDebugMode) {
+        debugPrint('scrcpy server exited gracefully: ${info.scid}');
+      }
+    } catch (_) {
+      // The command may be unreachable or still running; force cleanup below.
+    }
+    if (!exitedGracefully) {
+      if (kDebugMode) {
+        debugPrint(
+          'scrcpy server graceful exit timed out, killing: ${info.scid}',
+        );
+      }
+      _serverProcess.kill();
+      await _ignoreFailure(
+        serverExit.timeout(const Duration(seconds: 2), onTimeout: () => -1),
+      );
+    }
     await _ignoreFailure(
       _adb
           .removeForward(_serial, 'tcp:${info.localPort}')
@@ -666,16 +717,18 @@ final class _IoScrcpyAudioStream implements ScrcpyAudioStream {
   }
 }
 
-final class _IoScrcpyInputController implements ScrcpyInputController {
-  _IoScrcpyInputController(this._socket) {
+final class _IoScrcpyInputController
+    implements ScrcpyInputController, ScrcpyScreenPowerInputController {
+  _IoScrcpyInputController(this._socket, {required this.onTransportClosed}) {
     _subscription = _socket.chunks.listen(
       _onDeviceData,
-      onError: _clipboardController.addError,
+      onError: _onDeviceError,
       onDone: _onDeviceDone,
     );
   }
 
   final _ReadySocket _socket;
+  final void Function(Object? error) onTransportClosed;
   final ScrcpyDeviceMessageParser _deviceParser = ScrcpyDeviceMessageParser();
   final StreamController<String> _clipboardController =
       StreamController<String>.broadcast();
@@ -687,6 +740,7 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
   int _height = 0;
   bool _closed = false;
   bool _disposed = false;
+  bool _transportClosedReported = false;
   final Map<int, (int, int)> _activePointerSizes = <int, (int, int)>{};
 
   void updateVideoSize(int width, int height) {
@@ -696,7 +750,7 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
 
   Future<void> _send(List<int> bytes) {
     if (_closed) return Future<void>.value();
-    _writes = _writes.then((_) async {
+    final operation = _writes.catchError((Object _) {}).then((_) async {
       if (_closed) return;
       try {
         _socket.add(bytes);
@@ -705,22 +759,27 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
         // dart:io reports a closed socket as a StateError. The connection
         // lifecycle reports the disconnect; late UI input is safe to drop.
         if (error.message.toString().contains('closed')) {
-          _closed = true;
-          _activePointerSizes.clear();
+          _reportTransportClosed(error);
           return;
         }
         rethrow;
-      } on SocketException {
-        _closed = true;
-        _activePointerSizes.clear();
+      } on SocketException catch (error) {
+        _reportTransportClosed(error);
+      } catch (error) {
+        _reportTransportClosed(error);
       }
     });
-    return _writes;
+    _writes = operation.catchError((Object _) {});
+    return operation;
   }
 
   @override
   Future<void> sendKey({required int keyCode, bool down = true}) =>
       _send(ScrcpyControlMessageSerializer.key(keyCode: keyCode, down: down));
+
+  @override
+  Future<void> sendBackOrScreenOn({bool down = true}) =>
+      _send(ScrcpyControlMessageSerializer.backOrScreenOn(down: down));
 
   @override
   Future<void> sendPointer(ScrcpyPointerEvent event) {
@@ -831,9 +890,15 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
     }
   }
 
+  void _onDeviceError(Object error, StackTrace stackTrace) {
+    if (!_clipboardController.isClosed) {
+      _clipboardController.addError(error, stackTrace);
+    }
+    _reportTransportClosed(error);
+  }
+
   void _onDeviceDone() {
-    _closed = true;
-    _activePointerSizes.clear();
+    _reportTransportClosed(null);
     for (final acknowledgement in _clipboardAcks.values) {
       if (!acknowledgement.isCompleted) {
         acknowledgement.completeError(
@@ -841,6 +906,19 @@ final class _IoScrcpyInputController implements ScrcpyInputController {
         );
       }
     }
+  }
+
+  void _reportTransportClosed(Object? error) {
+    _closed = true;
+    _activePointerSizes.clear();
+    if (_disposed || _transportClosedReported) return;
+    _transportClosedReported = true;
+    if (kDebugMode) {
+      debugPrint(
+        'scrcpy control transport closed${error == null ? '' : ': $error'}',
+      );
+    }
+    onTransportClosed(error);
   }
 
   Future<void> close() async {
