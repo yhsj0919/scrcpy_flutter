@@ -19,6 +19,58 @@ final class AdbDeviceSnapshot {
   final DateTime observedAt;
 }
 
+extension AdbDeviceWatching on AdbToolkit {
+  /// Watches the device directory and owns the polling monitor lifecycle.
+  ///
+  /// Every call creates an independent, single-subscription stream. Polling
+  /// starts when the stream is listened to and stops when that subscription is
+  /// cancelled. Use [AdbDeviceMonitor] directly when manual refresh, pause, or
+  /// explicit lifecycle control is required.
+  Stream<AdbDeviceSnapshot> watchDevices({
+    Duration interval = const Duration(seconds: 2),
+    bool emitOnlyChanges = true,
+  }) {
+    late final AdbDeviceMonitor monitor;
+    late final StreamController<AdbDeviceSnapshot> controller;
+    StreamSubscription<AdbDeviceSnapshot>? subscription;
+    var emittedInitial = false;
+
+    controller = StreamController<AdbDeviceSnapshot>(
+      onListen: () {
+        monitor = AdbDeviceMonitor(this, interval: interval);
+        subscription = monitor.snapshots.listen(
+          (snapshot) {
+            final hasChanges =
+                snapshot.added.isNotEmpty ||
+                snapshot.removed.isNotEmpty ||
+                snapshot.changed.isNotEmpty;
+            if (!emittedInitial || !emitOnlyChanges || hasChanges) {
+              emittedInitial = true;
+              if (!controller.isClosed) controller.add(snapshot);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!controller.isClosed) controller.addError(error, stackTrace);
+          },
+        );
+        unawaited(
+          monitor.start().then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stackTrace) {
+              if (!controller.isClosed) controller.addError(error, stackTrace);
+            },
+          ),
+        );
+      },
+      onCancel: () async {
+        await subscription?.cancel();
+        await monitor.close();
+      },
+    );
+    return controller.stream;
+  }
+}
+
 /// Polling device monitor built on the public ADB boundary.
 ///
 /// Polling is used instead of owning a second long-running `adb track-devices`
@@ -46,6 +98,7 @@ final class AdbDeviceMonitor {
       throw ArgumentError.value(interval, 'interval', 'must be positive');
     }
     final initial = await refresh();
+    if (_closed) return initial;
     _timer ??= Timer.periodic(interval, (_) => _poll());
     return initial;
   }
@@ -103,8 +156,10 @@ final class AdbDeviceMonitor {
 
   Future<void> close() async {
     if (_closed) return;
-    await stop();
     _closed = true;
+    _timer?.cancel();
+    _timer = null;
+    await _refreshing;
     await _controller.close();
   }
 

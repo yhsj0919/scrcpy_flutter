@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -132,6 +134,11 @@ abstract interface class ScrcpyInputController {
 
   /// Updates the Android clipboard and waits for the server acknowledgement.
   Future<void> setClipboard(String text, {bool paste = false});
+}
+
+/// Optional health state for controllers backed by a transport connection.
+abstract interface class ScrcpyInputTransportStatus {
+  bool get isAvailable;
 }
 
 /// Optional scrcpy desktop navigation command implemented by control-channel
@@ -376,8 +383,8 @@ class _ScrcpyInputLayerState extends State<ScrcpyInputLayer> {
   }
 
   void _sendKeyClick(int keyCode) {
-    widget.controller.sendKey(keyCode: keyCode);
-    widget.controller.sendKey(keyCode: keyCode, down: false);
+    _dispatch(widget.controller.sendKey(keyCode: keyCode));
+    _dispatch(widget.controller.sendKey(keyCode: keyCode, down: false));
   }
 
   void _sendBackOrScreenOnClick() {
@@ -385,8 +392,8 @@ class _ScrcpyInputLayerState extends State<ScrcpyInputLayer> {
     if (controller is ScrcpyScreenPowerInputController) {
       final screenPowerController =
           controller as ScrcpyScreenPowerInputController;
-      screenPowerController.sendBackOrScreenOn();
-      screenPowerController.sendBackOrScreenOn(down: false);
+      _dispatch(screenPowerController.sendBackOrScreenOn());
+      _dispatch(screenPowerController.sendBackOrScreenOn(down: false));
     } else {
       _sendKeyClick(ScrcpyAndroidKeyCode.back);
     }
@@ -401,7 +408,9 @@ class _ScrcpyInputLayerState extends State<ScrcpyInputLayer> {
     }
     final keyCode = _androidKeyCode(event.logicalKey);
     if (keyCode == null || event is KeyRepeatEvent) return false;
-    widget.controller.sendKey(keyCode: keyCode, down: event is KeyDownEvent);
+    _dispatch(
+      widget.controller.sendKey(keyCode: keyCode, down: event is KeyDownEvent),
+    );
     return true;
   }
 
@@ -457,18 +466,28 @@ class _ScrcpyInputLayerState extends State<ScrcpyInputLayer> {
         action == ScrcpyPointerAction.cancel) {
       _activePointerPositions.remove(pointerId);
     }
-    widget.controller.sendPointer(
-      ScrcpyPointerEvent(
-        pointerId: pointerId,
-        action: action,
-        normalizedX: normalized.dx,
-        normalizedY: normalized.dy,
-        buttons: event.buttons,
-        videoWidth: currentVideoSize?.width.round(),
-        videoHeight: currentVideoSize?.height.round(),
-        scrollDeltaX: scrollDelta.dx,
-        scrollDeltaY: scrollDelta.dy,
+    _dispatch(
+      widget.controller.sendPointer(
+        ScrcpyPointerEvent(
+          pointerId: pointerId,
+          action: action,
+          normalizedX: normalized.dx,
+          normalizedY: normalized.dy,
+          buttons: event.buttons,
+          videoWidth: currentVideoSize?.width.round(),
+          videoHeight: currentVideoSize?.height.round(),
+          scrollDeltaX: scrollDelta.dx,
+          scrollDeltaY: scrollDelta.dy,
+        ),
       ),
+    );
+  }
+
+  void _dispatch(Future<void> operation) {
+    unawaited(
+      operation.catchError((Object error) {
+        if (kDebugMode) debugPrint('scrcpy input send failed: $error');
+      }),
     );
   }
 }

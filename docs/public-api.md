@@ -1,226 +1,124 @@
-# P0 公开 API 基线
+# 公开 API 基线
 
-更新于 2026-09-03。宿主按使用范围导入两个独立入口：
+更新于 2026-09-07。普通接入方只需要：
 
 ```dart
 import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_flutter.dart';
 ```
 
-不得导入 `package:scrcpy_flutter/src/...`，也不需要直接依赖 process、平台解码器或 scrcpy 上游内部对象。
+`adb_client` 负责设备发现、连接、配对、Shell、文件和应用管理；`scrcpy_flutter` 负责会话、音视频与控制。不要导入 `src/`。只有自定义传输、解码器或诊断工具才使用 `scrcpy_advanced.dart`。
 
-## 初始化与能力查询
-
-```dart
-final client = createDefaultScrcpyClient();
-final adb = AdbToolkit(client.adbClient);
-final capabilities = client.capabilities;
-```
-
-如宿主需要使用自己校验过的资源，可显式覆盖路径：
+## 初始化与设备监听
 
 ```dart
-final client = createDefaultScrcpyClient(
-  adbExecutablePath: r'C:\managed-tools\adb.exe',
-  scrcpyServerPath: r'C:\managed-tools\scrcpy-server-v4.1',
-);
-```
+final scrcpy = createDefaultScrcpyManager();
+final adb = scrcpy.adb;
 
-Windows 默认 Client 使用随插件分发的官方 ADB。`capabilities` 只描述 scrcpy 的视频和实时控制能力，不再混入设备发现、USB、网络连接或配对等 ADB 能力。
-
-## 设备发现
-
-```dart
 final devices = await adb.discoverDevices();
-for (final device in devices) {
-  print('${device.redactedSerial}: ${device.state.name}');
-}
-```
-
-ADB 领域能力位于独立的 `adb_client` package，`scrcpy_flutter` 不再重导出它。连接、配对、Wireless Debugging mDNS 发现、shell、sync、包管理和 forward 均有 typed interface，宿主不拼接 shell 字符串。
-
-`AdbToolkit.discoverDevices()` 会合并 `adb devices -l` 与 mDNS connect 服务。在线设备优先；尚未在线的已配对设备使用 `AdbDeviceState.paired`，并通过 `lastSeenAt` 提供最后发现时间。pairing 广播只用于配对流程，不进入设备列表。
-
-## 会话
-
-```dart
-final session = client.createSession(
-  const ScrcpySessionConfiguration(
-    deviceSerial: '实际序列号只保存在内存',
-    video: ScrcpyVideoOptions(
-      maxSize: 1920,
-      maxFps: 60,
-      bitRate: 8000000,
-      codec: ScrcpyVideoCodec.h264,
-      encoder: 'c2.rk.avc.encoder', // 可选，留空由 scrcpy 选择
-    ),
-  ),
-);
-
-await session.prepare();
-session.state.addListener(() {
-  print(session.state.value);
-});
-
-session.dispose();
-```
-
-设备墙或需要同时嵌入多个画面的宿主，应通过 `ScrcpySessionManager` 统一持有 Session：
-
-```dart
-final sessions = ScrcpySessionManager(
-  client: client,
-  maxSessions: 16,
-);
-
-final mainScreen = sessions.create(
-  const ScrcpySessionConfiguration(deviceSerial: 'device-a'),
-  id: 'device-a-main',
-);
-final appScreen = sessions.create(
-  const ScrcpySessionConfiguration(
-    deviceSerial: 'device-a',
-    displaySource: ScrcpyDisplaySource.virtual(
-      width: 1280,
-      height: 720,
-      dpi: 240,
-    ),
-  ),
-);
-
-final connection = await sessions.start(mainScreen.id);
-sessions.focus(appScreen.id);
-
-final deviceSessions = sessions.sessionsForDevice('device-a');
-await sessions.remove(mainScreen.id);
-await sessions.close();
-sessions.dispose();
-```
-
-管理器拥有 `ScrcpySession` 和连接生命周期，并公开只读的 `ScrcpyManagedSession`；宿主仍拥有从连接创建的视频、音频和剪贴板 Controller，移除 Session 前应先释放这些 Controller。`sessionsByDevice` 提供“设备 → Session”层级，默认总上限为 16，也可以由宿主调整或设为 `null`。
-
-`displaySource` 默认是主屏，也可以选择已有显示或声明一个新虚拟显示：
-
-```dart
-const source = ScrcpyDisplaySource.virtual(
-  width: 1280,
-  height: 720,
-  dpi: 240,
-  systemDecorations: false,
-  closePolicy: ScrcpyVirtualDisplayClosePolicy.moveContentToMainDisplay,
-  imePolicy: ScrcpyDisplayImePolicy.local,
-  keepActive: true,
-  launchApplication: ScrcpyApplicationLaunch(
-    'com.example.app',
-    forceStopBeforeStart: true,
-  ),
-);
-```
-
-应用启动通过 scrcpy `START_APP` 控制消息完成，不会作为未知参数传给 server。Demo 的应用列表可直接创建独立虚拟屏 Session；关闭页面会停止 Session 并销毁虚拟显示，选择迁移内容策略时则由 Android 将内容移回主屏。
-
-虚拟显示启用 `flexDisplay` 后，可以在 Session 运行期间切换应用和尺寸：
-
-```dart
-final input = connection.input!;
-await input.startApplication(
-  const ScrcpyApplicationLaunch('com.example.second'),
-);
-await input.resizeDisplay(width: 1920, height: 1080);
-```
-
-设备编码器可以在创建 session 前动态探测：
-
-```dart
-final capabilities = await client.probeVideoCapabilities(deviceSerial);
-final h264Encoders = capabilities.forCodec(ScrcpyVideoCodec.h264);
-```
-
-探测结果区分硬件/软件、vendor 和 alias 编码器。当前 Windows Native Texture 后端仅声明 H.264 解码能力；设备即使具有 H.265/AV1 编码器，选择后也会得到明确的 `unsupportedCapability`，不会以黑屏代替错误。
-
-音频传输默认关闭，不影响原有纯视频 Session。需要原始 Opus 包时显式启用：
-
-```dart
-final session = client.createSession(
-  const ScrcpySessionConfiguration(
-    deviceSerial: '实际序列号只保存在内存',
-    audioEnabled: true,
-    audioRequired: false, // 不可用时保留视频；true 则启动失败并清理
-    audio: ScrcpyAudioOptions(codec: ScrcpyAudioCodec.opus),
-  ),
-);
-final connection = await session.start();
-final audio = connection.audio!;
-final codec = await audio.codec; // null 表示设备端禁用或不可用
-audio.packets.listen((packet) {
-  // packet.data 是编码 payload，PTS 保留 scrcpy server 原值。
+final subscription = adb.watchDevices().listen((snapshot) {
+  // 使用 snapshot.devices 更新界面。
 });
 ```
 
-编码音频传输层与 Windows 原生播放、音量、静音及多窗口焦点管理均已公开。
+Windows 默认使用插件内置的 ADB 和 scrcpy server，宿主无需安装 Android SDK。必要时可向 `createDefaultScrcpyManager()` 传入 `adbExecutablePath` 或 `scrcpyServerPath`。
 
-`ScrcpyAudioOptions` 默认使用 `ScrcpyAudioSource.automatic`：Android 11 选择 `output`，Android 12 及以上选择 `playback`，无法取得系统版本时保守选择 `output`。宿主可以显式指定音源覆盖自动策略；`duplicateOnDevice` 仍要求显式选择 `playback`。虚拟显示工作台固定使用 `playback`，避免部分厂商把虚拟屏 `output` 路由同时复制到手机。
-
-Windows 可直接创建原生播放器；停止播放器不会关闭共享的视频连接：
+## 创建和展示会话
 
 ```dart
-final player = createNativeScrcpyAudioController(
-  connection.audio!,
-  bitRate: 128000,
+final session = await scrcpy.createSession(
+  deviceSerial: device.serial,
+  audioEnabled: true,
+  video: const ScrcpyVideoOptions(
+    maxSize: 1920,
+    maxFps: 60,
+    bitRate: 8000000,
+  ),
 );
-await player.start();
-await player.setVolume(0.5);
-await player.setMuted(true);
-await player.setMuted(false);
-await player.stop();
-player.dispose();
+
+ScrcpyView(session: session);
 ```
 
-通过 `player.value` 可观察播放状态、编码包数、传输字节、解码包、已播放/丢弃缓冲和当前缓冲字节。当前只支持 Opus。多个播放器可注册到 `ScrcpyAudioFocusManager`；请求焦点时只恢复目标播放器的用户静音状态，其余播放器保持静音，断流或播放错误会自动释放焦点。
-
-`prepare()` 只确认设备存在且状态可用；`start()` 才建立 server、socket 和 forward。Player、texture 等平台 Controller 由宿主独立持有，不改变 Session 的所有权模型。
-
-## 视频组件
+`ScrcpyView` 可放入任意 Flutter 布局，也可以循环 `scrcpy.sessions` 构建多个画面。移除 View 不关闭 Session；显式关闭使用：
 
 ```dart
-ScrcpyVideoView(
-  controller: videoController,
-  fit: BoxFit.contain,
-  placeholder: const Center(child: CircularProgressIndicator()),
-)
+await scrcpy.removeSession(session.id);
 ```
 
-`ScrcpyVideoController` 隐藏平台解码器和 Texture 创建细节，通过 `ScrcpyVideoState` 暴露播放状态、texture ID、视频尺寸和错误。
+## 虚拟屏
 
-## 输入覆盖层
+默认虚拟屏为竖屏 720×1280：
 
 ```dart
-ScrcpyInputLayer(
-  controller: inputController,
-  child: ScrcpyVideoView(controller: videoController),
-)
+final appSession = await scrcpy.createVirtualSession(
+  deviceSerial: device.serial,
+  application: 'com.example.app',
+  audioEnabled: true,
+);
 ```
 
-输入层公开归一化 pointer、滚轮、按键和文本接口，并已在内部处理 contain/cover 黑边、旋转、DPI 和动态视频尺寸映射，不要求宿主重写 UI。鼠标默认与 scrcpy 桌面端一致：左键注入触摸，中键发送 Home，右键发送 `BACK_OR_SCREEN_ON`（亮屏时返回，熄屏时点亮）。默认将靠近视频四边 2% 范围的鼠标按下吸附到首/末物理像素，以便 Android 边缘手势识别；宿主可通过 `gestureEdgeThreshold` 调整或设为 0 关闭。`ScrcpyGestureSimulator` 可生成归一化双指缩放序列。
-
-## 剪贴板
+完整配置：
 
 ```dart
-final clipboard = ScrcpyClipboardSynchronizer(connection.input!);
-await clipboard.start(); // 开启双向同步
-
-await clipboard.pushHostToDevice(paste: true);
-await clipboard.pullDeviceToHost(copyKey: ScrcpyCopyKey.copy);
-
-await clipboard.stop();
+final appSession = await scrcpy.createSession(
+  deviceSerial: device.serial,
+  display: ScrcpyDisplay.virtual(
+    width: 1080,
+    height: 1920,
+    dpi: 420,
+    systemDecorations: true,
+    application: 'com.example.app',
+  ),
+);
 ```
 
-`ScrcpyInputController` 也公开 `clipboardChanges`、`requestClipboard()` 和 `setClipboard()`，宿主可以只使用协议层而不启用系统剪贴板同步。内置 server 使用 `clipboard_autosync=false`，由插件统一处理轮询和回环抑制。剪贴板正文不会写入日志。
+宽高是 Android Display 像素，不是 Flutter 预览框尺寸。View 只按布局缩放画面，不会隐式修改虚拟屏。已有 Display 使用 `ScrcpyDisplay.existing(displayId)`。
 
-## 错误与日志
+## 控制
 
-- `AdbException`、`ScrcpyException` 都包含机器可读错误码。
-- `ScrcpyLogRecord` 包含级别、来源、可选 session ID 和结构化字段。
-- 设备标识使用 `AdbDevice.redactedSerial` 写入 UI/日志。
-- 配对地址、配对码及 typed ADB 命令中的设备序列号不会进入 process 后端诊断参数。
+```dart
+await session.home();
+await session.back();
+await session.power();
+await session.sendText('hello');
+await session.setMuted(true);
+await session.setVolume(0.5);
+```
 
+View 默认处理鼠标、触摸和键盘：左键触摸，中键 Home，右键 `BACK_OR_SCREEN_ON`。坐标转换、旋转、黑边和边缘坐标由内部处理。
+
+## 批量控制
+
+公共抽象只有“组、成员、主控”：
+
+```dart
+final group = scrcpy.createGroup(
+  sessions: selectedSessions,
+  primary: selectedSessions.first,
+);
+
+ScrcpyGroupView(group: group);
+group.setPrimary(otherSession);
+await group.home();
+```
+
+主控 View 上的输入会广播给组内当前可用的 Session。指针生命周期、断线过滤和单目标失败隔离由插件处理；设备选择和网格布局仍属于使用端。
+
+## 状态与释放
+
+```dart
+session.state.addListener(() => print(session.state.value));
+
+await subscription.cancel();
+await scrcpy.close();
+scrcpy.dispose();
+```
+
+状态包括 `idle`、`preparing`、`starting`、`streaming`、`disconnected`、`reconnecting`、`error` 和 `disposed`。错误使用 `ScrcpyException` 与 `ScrcpyErrorCode`。
+
+## API 分层
+
+- 默认入口：Manager、Session、View、控制组与常用配置。
+- ADB 包：连接、配对、设备、应用、文件、状态与批量 ADB 操作。
+- 高级入口：原始连接、协议、平台 Controller、指标与自定义后端。
+- Example：工作台和设备墙等产品形态，不作为插件公共 Widget。

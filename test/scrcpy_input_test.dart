@@ -4,7 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 final class FakeInputController
     implements ScrcpyInputController, ScrcpyScreenPowerInputController {
@@ -47,6 +47,15 @@ final class FakeInputController
 
   @override
   Future<void> setClipboard(String text, {bool paste = false}) async {}
+}
+
+final class FailingInputController implements ScrcpyInputController {
+  @override
+  Future<void> sendPointer(ScrcpyPointerEvent event) =>
+      Future<void>.error(StateError('transport closed'));
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {
@@ -442,6 +451,24 @@ void main() {
     expect(controller.events.map((event) => event.pointerId).toSet(), <int>{
       ScrcpyPointerId.mouse,
     });
+  });
+
+  testWidgets('input transport failures do not escape the pointer dispatcher', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      Center(
+        child: ScrcpyInputLayer(
+          controller: FailingInputController(),
+          child: const SizedBox(width: 200, height: 100),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(ScrcpyInputLayer));
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
   });
 
   test('coordinate mapper snaps gesture starts to physical edges', () {

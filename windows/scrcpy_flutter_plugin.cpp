@@ -15,6 +15,7 @@
 #include <mfidl.h>
 #include <mftransform.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <wrl/client.h>
 
 #include "third_party/opus/include/opus.h"
@@ -48,6 +49,22 @@ uint64_t FileTimeValue(const FILETIME& value) {
   result.LowPart = value.dwLowDateTime;
   result.HighPart = value.dwHighDateTime;
   return result.QuadPart;
+}
+
+int32_t CurrentProcessThreadCount() {
+  const DWORD process_id = GetCurrentProcessId();
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return 0;
+  THREADENTRY32 entry{};
+  entry.dwSize = sizeof(entry);
+  int32_t count = 0;
+  if (Thread32First(snapshot, &entry)) {
+    do {
+      if (entry.th32OwnerProcessID == process_id) ++count;
+    } while (Thread32Next(snapshot, &entry));
+  }
+  CloseHandle(snapshot);
+  return count;
 }
 
 const flutter::EncodableMap& Args(
@@ -773,6 +790,8 @@ void ScrcpyFlutterPlugin::HandleVideoMethodCall(
       metrics[flutter::EncodableValue("logicalProcessors")] =
           flutter::EncodableValue(static_cast<int32_t>(
               GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)));
+      metrics[flutter::EncodableValue("threadCount")] =
+          flutter::EncodableValue(CurrentProcessThreadCount());
       result->Success(flutter::EncodableValue(metrics));
     } else if (call.method_name() == "dispose") {
       int64_t id = GetInt(args, "textureId");

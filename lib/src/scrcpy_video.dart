@@ -59,12 +59,14 @@ final class ScrcpyVideoView extends StatelessWidget {
   const ScrcpyVideoView({
     required this.controller,
     this.fit = BoxFit.contain,
+    this.alignment = Alignment.center,
     this.placeholder,
     super.key,
   });
 
   final ScrcpyVideoController controller;
   final BoxFit fit;
+  final Alignment alignment;
   final Widget? placeholder;
 
   @override
@@ -78,6 +80,7 @@ final class ScrcpyVideoView extends StatelessWidget {
           }
           return FittedBox(
             fit: fit,
+            alignment: alignment,
             clipBehavior: Clip.hardEdge,
             child: SizedBox(
               width: state.width?.toDouble() ?? 1,

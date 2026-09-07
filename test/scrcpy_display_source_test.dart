@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 void main() {
   test('main display keeps the historical default server arguments', () {

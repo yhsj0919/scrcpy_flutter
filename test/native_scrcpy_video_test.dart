@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 final class _FakeVideoConnection implements ScrcpyVideoConnection {
   _FakeVideoConnection({this.codecId = ScrcpyVideoCodecInfo.h264});

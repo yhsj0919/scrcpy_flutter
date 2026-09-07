@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:adb_client/adb_client.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 extension on ScrcpyClient {
   AdbToolkit get adbToolkit => AdbToolkit(adbClient);

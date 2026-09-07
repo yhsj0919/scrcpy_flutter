@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:adb_client/adb_client.dart';
 import 'package:flutter/material.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 import 'virtual_display_defaults.dart';
 
@@ -382,7 +382,7 @@ class _VirtualDisplayTile extends StatefulWidget {
 }
 
 class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
-  late final ScrcpySession _session;
+  late final ScrcpyRawSession _session;
   StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
   Future<void> _connectionChange = Future<void>.value();
   ScrcpyVideoController? _video;

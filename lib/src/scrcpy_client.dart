@@ -23,12 +23,15 @@ final class ScrcpyClient {
     control: runtimeInfo?.scrcpyServerPath?.isNotEmpty == true,
   );
 
-  ScrcpySession createSession(ScrcpySessionConfiguration configuration) =>
-      ScrcpySession(
-        adbDeviceService: adbClient,
-        configuration: configuration,
-        videoConnector: _videoConnectorOrNull(),
-      );
+  ScrcpyRawSession createSession(
+    ScrcpySessionConfiguration configuration, {
+    String? id,
+  }) => ScrcpyRawSession(
+    adbDeviceService: adbClient,
+    configuration: configuration,
+    videoConnector: _videoConnectorOrNull(),
+    id: id,
+  );
 
   /// Lists packages through ADB and enriches localized display names through
   /// the bundled scrcpy server. Standard package commands expose label

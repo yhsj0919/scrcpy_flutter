@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:adb_client/adb_client.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 class FakeAdbClient implements AdbClient {
   var calls = 0;
@@ -347,7 +347,7 @@ malformed line
   test('ScrcpySession reports an unexpected transport disconnect', () async {
     final connector = FakeVideoConnector();
     final connection = FakeSessionVideoConnection();
-    final session = ScrcpySession(
+    final session = ScrcpyRawSession(
       adbDeviceService: FakeAdbClient(),
       configuration: const ScrcpySessionConfiguration(
         deviceSerial: 'test-device',
@@ -374,7 +374,7 @@ malformed line
       3,
       imePolicy: ScrcpyDisplayImePolicy.fallbackDisplay,
     );
-    final session = ScrcpySession(
+    final session = ScrcpyRawSession(
       adbDeviceService: FakeAdbClient(),
       configuration: const ScrcpySessionConfiguration(
         deviceSerial: 'test-device',
@@ -397,7 +397,7 @@ malformed line
     'ScrcpySession reconnects once after an unexpected disconnect',
     () async {
       final connector = RepeatingVideoConnector();
-      final session = ScrcpySession(
+      final session = ScrcpyRawSession(
         adbDeviceService: FakeAdbClient(),
         configuration: const ScrcpySessionConfiguration(
           deviceSerial: 'test-device',
@@ -429,7 +429,7 @@ malformed line
     'user stop cancels pending reconnect without a duplicate session',
     () async {
       final connector = RepeatingVideoConnector();
-      final session = ScrcpySession(
+      final session = ScrcpyRawSession(
         adbDeviceService: FakeAdbClient(),
         configuration: const ScrcpySessionConfiguration(
           deviceSerial: 'test-device',
@@ -457,7 +457,7 @@ malformed line
 
   test('reconnect exhaustion reports one terminal error', () async {
     final connector = FirstThenFailVideoConnector();
-    final session = ScrcpySession(
+    final session = ScrcpyRawSession(
       adbDeviceService: FakeAdbClient(),
       configuration: const ScrcpySessionConfiguration(
         deviceSerial: 'test-device',
@@ -484,14 +484,14 @@ malformed line
   test('one startup failure does not affect another session', () async {
     final failedConnector = AlwaysFailVideoConnector();
     final healthyConnector = RepeatingVideoConnector();
-    final failed = ScrcpySession(
+    final failed = ScrcpyRawSession(
       adbDeviceService: FakeAdbClient(),
       configuration: const ScrcpySessionConfiguration(
         deviceSerial: 'test-device',
       ),
       videoConnector: failedConnector,
     );
-    final healthy = ScrcpySession(
+    final healthy = ScrcpyRawSession(
       adbDeviceService: FakeAdbClient(),
       configuration: const ScrcpySessionConfiguration(
         deviceSerial: 'test-device',
@@ -536,7 +536,7 @@ malformed line
     () async {
       final connector = FakeVideoConnector();
       final connection = FakeSessionVideoConnection();
-      final session = ScrcpySession(
+      final session = ScrcpyRawSession(
         adbDeviceService: FakeAdbClient(),
         configuration: const ScrcpySessionConfiguration(
           deviceSerial: 'test-device',
@@ -567,7 +567,7 @@ malformed line
 
   test('ScrcpySession starts and stops cleanly for 50 cycles', () async {
     final connector = RepeatingVideoConnector();
-    final session = ScrcpySession(
+    final session = ScrcpyRawSession(
       adbDeviceService: FakeAdbClient(),
       configuration: const ScrcpySessionConfiguration(
         deviceSerial: 'test-device',

@@ -113,6 +113,8 @@ final class AdbBatchTask {
   late final Map<String, AdbBatchItemResult> _items;
   Future<AdbBatchSnapshot>? _running;
   bool _cancelled = false;
+  bool _paused = false;
+  Completer<void>? _resumeSignal;
   int _nextIndex = 0;
 
   Stream<AdbBatchSnapshot> get snapshots => _snapshots.stream;
@@ -121,9 +123,30 @@ final class AdbBatchTask {
 
   Future<AdbBatchSnapshot> start() => _running ??= _run();
 
+  bool get isPaused => _paused;
+
+  /// Stops workers from taking another queued item. Operations which are
+  /// already running are allowed to finish.
+  void pause() {
+    if (_cancelled || current.isComplete || _paused) return;
+    _paused = true;
+    _resumeSignal = Completer<void>();
+    _emit();
+  }
+
+  void resume() {
+    if (!_paused) return;
+    _paused = false;
+    final signal = _resumeSignal;
+    _resumeSignal = null;
+    if (signal != null && !signal.isCompleted) signal.complete();
+    _emit();
+  }
+
   void cancel() {
     if (_cancelled) return;
     _cancelled = true;
+    resume();
     for (final token in _activeTokens.toList()) {
       token.cancel();
     }
@@ -152,8 +175,16 @@ final class AdbBatchTask {
 
   Future<void> _worker() async {
     while (!_cancelled && _nextIndex < _targets.length) {
+      await _waitWhilePaused();
+      if (_cancelled) return;
       final target = _targets[_nextIndex++];
       await _runTarget(target);
+    }
+  }
+
+  Future<void> _waitWhilePaused() async {
+    while (_paused && !_cancelled) {
+      await _resumeSignal?.future;
     }
   }
 

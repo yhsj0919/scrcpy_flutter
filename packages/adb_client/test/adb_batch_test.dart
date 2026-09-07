@@ -75,6 +75,39 @@ void main() {
     expect(result.items['queued']!.state, AdbBatchItemState.cancelled);
   });
 
+  test('pause lets running work finish but holds queued targets', () async {
+    final firstStarted = Completer<void>();
+    final finishFirst = Completer<void>();
+    final startedTargets = <String>[];
+    final task = AdbBatchTask(
+      targets: const <String>['first', 'second'],
+      maxConcurrency: 1,
+      operation: (target, _) async {
+        startedTargets.add(target);
+        if (target == 'first') {
+          firstStarted.complete();
+          await finishFirst.future;
+        }
+      },
+    );
+
+    final completion = task.start();
+    await firstStarted.future;
+    task.pause();
+    finishFirst.complete();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(task.isPaused, isTrue);
+    expect(startedTargets, const <String>['first']);
+    expect(task.current.items['first']!.state, AdbBatchItemState.succeeded);
+    expect(task.current.items['second']!.state, AdbBatchItemState.queued);
+
+    task.resume();
+    final result = await completion;
+    expect(startedTargets, const <String>['first', 'second']);
+    expect(result.count(AdbBatchItemState.succeeded), 2);
+  });
+
   test('package tasks forward safe install and uninstall options', () async {
     final adb = _FakePackageService();
     final manager = AdbBatchPackageManager(adb);

@@ -1,7 +1,7 @@
 import 'package:adb_client/adb_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 import 'package:scrcpy_flutter_example/device_wall.dart';
 
 final class _FakeAdbClient implements AdbClient {
@@ -83,5 +83,36 @@ void main() {
     expect(await cellWidth(800), closeTo(378, 0.1));
     expect(await cellWidth(1300), closeTo(414.7, 0.1));
     expect(await cellWidth(1900), closeTo(458, 0.1));
+  });
+
+  testWidgets('touch broadcast is opt-in and rejects targets without video', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1300, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final devices = _devices(2);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DeviceWallPage(
+          client: ScrcpyClient(adbClient: _FakeAdbClient()),
+          devices: devices,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('停止同步'), findsNothing);
+    await tester.tap(find.byTooltip('配置触摸广播'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('触摸广播'), findsOneWidget);
+    expect(find.textContaining('画面尺寸未就绪'), findsWidgets);
+    final startButton = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '开启同步'),
+    );
+    expect(startButton.onPressed, isNull);
   });
 }

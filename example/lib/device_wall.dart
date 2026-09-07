@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:adb_client/adb_client.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:flutter/services.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 import 'virtual_display_defaults.dart';
+import 'device_wall_session_manager.dart';
 
 class DeviceWallPage extends StatefulWidget {
   const DeviceWallPage({
@@ -22,7 +25,7 @@ class DeviceWallPage extends StatefulWidget {
 }
 
 class _DeviceWallPageState extends State<DeviceWallPage> {
-  late final ScrcpySessionManager _sessions;
+  late final DeviceWallSessionManager _sessions;
   final ScrcpyAudioFocusManager _audioFocus = ScrcpyAudioFocusManager();
   late final List<_DeviceWallWindow> _windows;
   final GlobalKey _viewportKey = GlobalKey();
@@ -33,11 +36,32 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
   int _qualityRevision = 0;
   int _nextVirtualId = 1;
   String? _expandedId;
+  final Set<String> _selectedDeviceSerials = <String>{};
+  bool _selectionMode = false;
+  AdbBatchTask? _batchTask;
+  AdbBatchSnapshot? _batchSnapshot;
+  StreamSubscription<AdbBatchSnapshot>? _batchSubscription;
+  String? _batchLabel;
+  final Map<String, ScrcpyInputController> _windowInputs =
+      <String, ScrcpyInputController>{};
+  final Map<String, Size> _windowVideoSizes = <String, Size>{};
+  bool _touchBroadcastEnabled = false;
+  String? _touchBroadcastSourceId;
+  final Set<String> _touchBroadcastTargetIds = <String>{};
+  final Map<int, ScrcpyPointerEvent> _activeBroadcastPointers =
+      <int, ScrcpyPointerEvent>{};
+  late final ScrcpyProcessMetricsCollector _processMetrics;
+  final Map<String, ScrcpySessionMetricsSnapshot> _sessionMetrics =
+      <String, ScrcpySessionMetricsSnapshot>{};
+  final ValueNotifier<int> _metricsRevision = ValueNotifier<int>(0);
+  bool _disposed = false;
 
   @override
   void initState() {
     super.initState();
-    _sessions = ScrcpySessionManager(client: widget.client);
+    _sessions = DeviceWallSessionManager(client: widget.client);
+    _processMetrics = ScrcpyProcessMetricsCollector();
+    _processMetrics.addListener(_notifyMetricsChanged);
     _windows = <_DeviceWallWindow>[
       for (final device in widget.devices)
         _DeviceWallWindow(
@@ -57,6 +81,12 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
 
   @override
   void dispose() {
+    _disposed = true;
+    _batchTask?.cancel();
+    unawaited(_batchSubscription?.cancel());
+    _processMetrics.removeListener(_notifyMetricsChanged);
+    _processMetrics.dispose();
+    _metricsRevision.dispose();
     _audioFocus.dispose();
     _sessions.dispose();
     super.dispose();
@@ -70,6 +100,32 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
     }
     if (mounted) setState(() {});
   }
+
+  void _notifyMetricsChanged() {
+    if (!_disposed) _metricsRevision.value++;
+  }
+
+  void _updateSessionMetrics(
+    String windowId,
+    ScrcpySessionMetricsSnapshot? snapshot,
+  ) {
+    if (snapshot == null) {
+      _sessionMetrics.remove(windowId);
+    } else {
+      _sessionMetrics[windowId] = snapshot;
+    }
+    _notifyMetricsChanged();
+  }
+
+  Future<void> _showMetrics() => showDialog<void>(
+    context: context,
+    builder: (_) => _DeviceWallMetricsDialog(
+      revision: _metricsRevision,
+      windows: _windows,
+      sessionMetrics: _sessionMetrics,
+      processMetrics: _processMetrics,
+    ),
+  );
 
   void _scheduleVisibilityUpdate() {
     if (_visibilityUpdateScheduled) return;
@@ -117,6 +173,278 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
       _qualityPolicy = policy;
       _qualityRevision++;
     });
+  }
+
+  List<String> get _selectedSerials =>
+      _selectedDeviceSerials.toList(growable: false);
+
+  bool get _batchRunning =>
+      _batchTask != null && !(_batchSnapshot?.isComplete ?? false);
+
+  void _toggleSelectionMode() {
+    setState(() {
+      _selectionMode = !_selectionMode;
+      if (!_selectionMode) _selectedDeviceSerials.clear();
+    });
+  }
+
+  void _selectAllDevices() => setState(() {
+    _selectedDeviceSerials
+      ..clear()
+      ..addAll(widget.devices.map((device) => device.serial));
+  });
+
+  Future<void> _runBatch(String label, AdbBatchOperation operation) async {
+    final targets = _selectedSerials;
+    if (targets.isEmpty || _batchRunning) return;
+    await _batchSubscription?.cancel();
+    final task = AdbBatchTask(
+      targets: targets,
+      operation: operation,
+      maxConcurrency: 3,
+      itemTimeout: const Duration(seconds: 20),
+    );
+    setState(() {
+      _batchTask = task;
+      _batchLabel = label;
+      _batchSnapshot = task.current;
+    });
+    _batchSubscription = task.snapshots.listen((snapshot) {
+      if (mounted && identical(_batchTask, task)) {
+        setState(() => _batchSnapshot = snapshot);
+      }
+    });
+    final result = await task.start();
+    if (!mounted || !identical(_batchTask, task)) return;
+    setState(() => _batchSnapshot = result);
+    await _showBatchResults();
+  }
+
+  Future<void> _sendBatchKey(int keyCode, String label) =>
+      _runBatch(label, (serial, token) async {
+        final result = await widget.client.adbClient.shell(serial, <String>[
+          'input',
+          'keyevent',
+          '$keyCode',
+        ], cancellationToken: token);
+        if (!result.isSuccess) throw StateError('$label 失败');
+      });
+
+  Future<AdbApplication?> _chooseBatchApplication(String title) async {
+    final serials = _selectedSerials;
+    if (serials.isEmpty) return null;
+    try {
+      final applications = (await widget.client.listApplications(serials.first))
+          .where((application) => application.enabled && application.launchable)
+          .toList(growable: false);
+      if (!mounted) return null;
+      return await showDialog<AdbApplication>(
+        context: context,
+        builder: (_) =>
+            _ApplicationPicker(applications: applications, title: title),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('读取应用失败：$error')));
+      }
+      return null;
+    }
+  }
+
+  Future<void> _startBatchApplication() async {
+    final application = await _chooseBatchApplication('选择要批量启动的应用');
+    if (application == null) return;
+    await _runBatch(
+      '启动 ${application.name}',
+      (serial, token) => AdbToolkit(widget.client.adbClient)
+          .applications(serial)
+          .startApplication(application.packageName, cancellationToken: token),
+    );
+  }
+
+  Future<void> _stopBatchApplication() async {
+    final application = await _chooseBatchApplication('选择要批量停止的应用');
+    if (application == null) return;
+    await _runBatch(
+      '停止 ${application.name}',
+      (serial, token) => AdbToolkit(widget.client.adbClient)
+          .applications(serial)
+          .stopApplication(application.packageName, cancellationToken: token),
+    );
+  }
+
+  Future<void> _showBatchResults() async {
+    final snapshot = _batchSnapshot;
+    if (!mounted || snapshot == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _BatchResultsDialog(
+        label: _batchLabel ?? '批量任务',
+        snapshot: snapshot,
+        devices: widget.devices,
+      ),
+    );
+  }
+
+  void _handleBatchAction(_DeviceWallBatchAction action) {
+    switch (action) {
+      case _DeviceWallBatchAction.home:
+        unawaited(_sendBatchKey(3, 'Home'));
+      case _DeviceWallBatchAction.back:
+        unawaited(_sendBatchKey(4, '返回'));
+      case _DeviceWallBatchAction.recents:
+        unawaited(_sendBatchKey(187, '最近任务'));
+      case _DeviceWallBatchAction.startApplication:
+        unawaited(_startBatchApplication());
+      case _DeviceWallBatchAction.stopApplication:
+        unawaited(_stopBatchApplication());
+    }
+  }
+
+  void _updateWindowInput(
+    String windowId,
+    ScrcpyInputController? controller,
+    Size? videoSize,
+  ) {
+    if (controller == null) {
+      final affectsBroadcast =
+          _touchBroadcastEnabled &&
+          (_touchBroadcastSourceId == windowId ||
+              _touchBroadcastTargetIds.contains(windowId));
+      if (affectsBroadcast) _cancelActiveBroadcastPointers();
+      _windowInputs.remove(windowId);
+      _windowVideoSizes.remove(windowId);
+      if (affectsBroadcast) {
+        _touchBroadcastTargetIds.remove(windowId);
+        if (_touchBroadcastSourceId == windowId ||
+            _touchBroadcastTargetIds.isEmpty) {
+          _touchBroadcastEnabled = false;
+          _touchBroadcastSourceId = null;
+          _touchBroadcastTargetIds.clear();
+        }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() {});
+        });
+      }
+      return;
+    }
+    _windowInputs[windowId] = controller;
+    if (videoSize != null && !videoSize.isEmpty) {
+      _windowVideoSizes[windowId] = videoSize;
+    }
+  }
+
+  void _broadcastPointer(String sourceId, ScrcpyPointerEvent event) {
+    if (!_touchBroadcastEnabled || sourceId != _touchBroadcastSourceId) return;
+    if (event.action == ScrcpyPointerAction.hover ||
+        event.action == ScrcpyPointerAction.scroll) {
+      return;
+    }
+    final normalizedEvent = ScrcpyPointerEvent(
+      pointerId: event.pointerId,
+      action: event.action,
+      normalizedX: event.normalizedX,
+      normalizedY: event.normalizedY,
+      buttons: event.buttons,
+    );
+    if (event.action == ScrcpyPointerAction.down ||
+        event.action == ScrcpyPointerAction.move) {
+      _activeBroadcastPointers[event.pointerId] = normalizedEvent;
+    } else {
+      _activeBroadcastPointers.remove(event.pointerId);
+    }
+    for (final targetId in _touchBroadcastTargetIds.toList()) {
+      final controller = _windowInputs[targetId];
+      if (controller == null) {
+        _touchBroadcastTargetIds.remove(targetId);
+        continue;
+      }
+      unawaited(
+        controller.sendPointer(normalizedEvent).catchError((Object error) {
+          if (kDebugMode) {
+            debugPrint('触摸广播发送失败 [$targetId]: $error');
+          }
+        }),
+      );
+    }
+  }
+
+  void _handleInputFailure(String windowId, Object error) {
+    if (!_touchBroadcastEnabled) return;
+    if (windowId == _touchBroadcastSourceId) {
+      _cancelActiveBroadcastPointers();
+      setState(() {
+        _touchBroadcastEnabled = false;
+        _touchBroadcastSourceId = null;
+        _touchBroadcastTargetIds.clear();
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('主控窗口输入失效，已停止触摸广播：$error')));
+      return;
+    }
+    if (_touchBroadcastTargetIds.remove(windowId)) {
+      if (_touchBroadcastTargetIds.isEmpty) {
+        _touchBroadcastEnabled = false;
+        _touchBroadcastSourceId = null;
+      }
+      setState(() {});
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('输入失效的广播目标已移除：$error')));
+    }
+  }
+
+  Future<void> _configureTouchBroadcast() async {
+    final configuration = await showDialog<_TouchBroadcastConfiguration>(
+      context: context,
+      builder: (_) => _TouchBroadcastDialog(
+        windows: _windows,
+        videoSizes: _windowVideoSizes,
+        initialSourceId:
+            _touchBroadcastSourceId ??
+            _sessions.focusedId ??
+            _windows.firstOrNull?.id,
+        initialTargetIds: _touchBroadcastTargetIds,
+      ),
+    );
+    if (!mounted || configuration == null) return;
+    setState(() {
+      _touchBroadcastSourceId = configuration.sourceId;
+      _touchBroadcastTargetIds
+        ..clear()
+        ..addAll(configuration.targetIds);
+      _touchBroadcastEnabled = configuration.targetIds.isNotEmpty;
+    });
+  }
+
+  void _stopTouchBroadcast() {
+    _cancelActiveBroadcastPointers();
+    setState(() {
+      _touchBroadcastEnabled = false;
+      _touchBroadcastTargetIds.clear();
+    });
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('触摸广播已紧急停止')));
+  }
+
+  void _cancelActiveBroadcastPointers() {
+    for (final controller
+        in _touchBroadcastTargetIds.map((id) => _windowInputs[id]).nonNulls) {
+      for (final pointer in _activeBroadcastPointers.values) {
+        unawaited(
+          controller.sendPointer(
+            ScrcpyPointerEvent(
+              pointerId: pointer.pointerId,
+              action: ScrcpyPointerAction.cancel,
+              normalizedX: pointer.normalizedX,
+              normalizedY: pointer.normalizedY,
+              buttons: 0,
+            ),
+          ),
+        );
+      }
+    }
+    _activeBroadcastPointers.clear();
   }
 
   Future<void> _addVirtualApplication() async {
@@ -205,10 +533,25 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
   }
 
   void _removeWindow(_DeviceWallWindow window) {
+    if (_touchBroadcastEnabled &&
+        (_touchBroadcastSourceId == window.id ||
+            _touchBroadcastTargetIds.contains(window.id))) {
+      _cancelActiveBroadcastPointers();
+    }
     setState(() {
       _windows.remove(window);
       _visibleWindowIds.remove(window.id);
       _cellKeys.remove(window.id);
+      _windowInputs.remove(window.id);
+      _windowVideoSizes.remove(window.id);
+      _sessionMetrics.remove(window.id);
+      _touchBroadcastTargetIds.remove(window.id);
+      if (_touchBroadcastSourceId == window.id ||
+          _touchBroadcastTargetIds.isEmpty) {
+        _touchBroadcastEnabled = false;
+        _touchBroadcastSourceId = null;
+        _touchBroadcastTargetIds.clear();
+      }
       if (_expandedId == window.id) _expandedId = null;
     });
   }
@@ -218,6 +561,95 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
     appBar: AppBar(
       title: Text('设备墙 · ${widget.devices.length} 台 · ${_windows.length} 个窗口'),
       actions: <Widget>[
+        IconButton(
+          tooltip: '性能指标',
+          onPressed: _showMetrics,
+          icon: const Icon(Icons.monitor_heart_outlined),
+        ),
+        if (_touchBroadcastEnabled)
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: _stopTouchBroadcast,
+            icon: const Icon(Icons.touch_app),
+            label: Text('停止同步（${_touchBroadcastTargetIds.length}）'),
+          )
+        else
+          IconButton(
+            tooltip: '配置触摸广播',
+            onPressed: _windows.length < 2 ? null : _configureTouchBroadcast,
+            icon: const Icon(Icons.touch_app_outlined),
+          ),
+        IconButton(
+          tooltip: _selectionMode ? '退出批量选择' : '批量控制',
+          onPressed: _batchRunning ? null : _toggleSelectionMode,
+          icon: Icon(
+            _selectionMode ? Icons.checklist_rtl : Icons.library_add_check,
+          ),
+        ),
+        if (_selectionMode) ...[
+          TextButton(
+            onPressed: _selectAllDevices,
+            child: Text('全选（${_selectedDeviceSerials.length}）'),
+          ),
+          PopupMenuButton<_DeviceWallBatchAction>(
+            tooltip: '对选中设备执行',
+            enabled: _selectedDeviceSerials.isNotEmpty && !_batchRunning,
+            onSelected: _handleBatchAction,
+            itemBuilder: (_) => const <PopupMenuEntry<_DeviceWallBatchAction>>[
+              PopupMenuItem(
+                value: _DeviceWallBatchAction.home,
+                child: ListTile(leading: Icon(Icons.home), title: Text('Home')),
+              ),
+              PopupMenuItem(
+                value: _DeviceWallBatchAction.back,
+                child: ListTile(
+                  leading: Icon(Icons.arrow_back),
+                  title: Text('返回'),
+                ),
+              ),
+              PopupMenuItem(
+                value: _DeviceWallBatchAction.recents,
+                child: ListTile(
+                  leading: Icon(Icons.view_carousel),
+                  title: Text('最近任务'),
+                ),
+              ),
+              PopupMenuDivider(),
+              PopupMenuItem(
+                value: _DeviceWallBatchAction.startApplication,
+                child: ListTile(
+                  leading: Icon(Icons.play_arrow),
+                  title: Text('启动应用'),
+                ),
+              ),
+              PopupMenuItem(
+                value: _DeviceWallBatchAction.stopApplication,
+                child: ListTile(leading: Icon(Icons.stop), title: Text('停止应用')),
+              ),
+            ],
+          ),
+        ],
+        if (_batchRunning) ...[
+          IconButton(
+            tooltip: _batchTask!.isPaused ? '继续剩余任务' : '暂停剩余任务',
+            onPressed: () => setState(() {
+              _batchTask!.isPaused ? _batchTask!.resume() : _batchTask!.pause();
+            }),
+            icon: Icon(_batchTask!.isPaused ? Icons.play_arrow : Icons.pause),
+          ),
+          IconButton(
+            tooltip: '紧急停止批量任务',
+            onPressed: _batchTask!.cancel,
+            icon: const Icon(Icons.stop_circle_outlined),
+          ),
+        ] else if (_batchSnapshot != null)
+          IconButton(
+            tooltip: '查看上次批量结果',
+            onPressed: _showBatchResults,
+            icon: const Icon(Icons.fact_check_outlined),
+          ),
         IconButton(
           tooltip: '画质调度设置',
           onPressed: _configureQualityPolicy,
@@ -285,6 +717,33 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
                               _qualityTier(window.id),
                             ),
                             qualityRevision: _qualityRevision,
+                            selectionMode: _selectionMode,
+                            selected: _selectedDeviceSerials.contains(
+                              window.device.serial,
+                            ),
+                            onSelectionChanged: (selected) => setState(() {
+                              if (selected) {
+                                _selectedDeviceSerials.add(
+                                  window.device.serial,
+                                );
+                              } else {
+                                _selectedDeviceSerials.remove(
+                                  window.device.serial,
+                                );
+                              }
+                            }),
+                            onInputChanged: (controller, videoSize) =>
+                                _updateWindowInput(
+                                  window.id,
+                                  controller,
+                                  videoSize,
+                                ),
+                            onPointer: (event) =>
+                                _broadcastPointer(window.id, event),
+                            onInputFailure: (error) =>
+                                _handleInputFailure(window.id, error),
+                            onMetrics: (snapshot) =>
+                                _updateSessionMetrics(window.id, snapshot),
                             onFocus: () => _focus(window.id),
                             onToggleExpanded: () {
                               final id = window.id;
@@ -331,6 +790,14 @@ final class _DeviceWallWindow {
   bool get isVirtual => displaySource is ScrcpyVirtualDisplaySource;
 
   String get audioFocusId => 'device-audio:${device.serial}';
+}
+
+enum _DeviceWallBatchAction {
+  home,
+  back,
+  recents,
+  startApplication,
+  stopApplication,
 }
 
 enum _DeviceWallQualityTier {
@@ -424,13 +891,20 @@ class _DeviceWallTile extends StatefulWidget {
     required this.qualityTier,
     required this.qualityProfile,
     required this.qualityRevision,
+    required this.selectionMode,
+    required this.selected,
+    required this.onSelectionChanged,
+    required this.onInputChanged,
+    required this.onPointer,
+    required this.onInputFailure,
+    required this.onMetrics,
     required this.onFocus,
     required this.onToggleExpanded,
     this.onClose,
     super.key,
   });
 
-  final ScrcpySessionManager manager;
+  final DeviceWallSessionManager manager;
   final ScrcpyAudioFocusManager audioFocus;
   final _DeviceWallWindow window;
   final bool focused;
@@ -438,6 +912,14 @@ class _DeviceWallTile extends StatefulWidget {
   final _DeviceWallQualityTier qualityTier;
   final _DeviceWallQualityProfile qualityProfile;
   final int qualityRevision;
+  final bool selectionMode;
+  final bool selected;
+  final ValueChanged<bool> onSelectionChanged;
+  final void Function(ScrcpyInputController? controller, Size? videoSize)
+  onInputChanged;
+  final ValueChanged<ScrcpyPointerEvent> onPointer;
+  final ValueChanged<Object> onInputFailure;
+  final ValueChanged<ScrcpySessionMetricsSnapshot?> onMetrics;
   final VoidCallback onFocus;
   final VoidCallback onToggleExpanded;
   final VoidCallback? onClose;
@@ -447,12 +929,15 @@ class _DeviceWallTile extends StatefulWidget {
 }
 
 class _DeviceWallTileState extends State<_DeviceWallTile> {
-  late ScrcpyManagedSession _session;
+  late DeviceWallManagedSession _session;
   StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
   Future<void> _connectionChange = Future<void>.value();
   Timer? _qualityTimer;
   late _DeviceWallQualityTier _appliedQualityTier = widget.qualityTier;
   late _DeviceWallQualityProfile _appliedQualityProfile = widget.qualityProfile;
+  final ValueNotifier<ScrcpySessionState> _metricsSessionState =
+      ValueNotifier<ScrcpySessionState>(ScrcpySessionState.idle);
+  late final ScrcpySessionMetricsCollector _metrics;
   ScrcpyVideoController? _video;
   ScrcpyAudioController? _audio;
   ScrcpyInputController? _input;
@@ -467,6 +952,11 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
   void initState() {
     super.initState();
     _session = _createManagedSession(_appliedQualityProfile);
+    _metricsSessionState.value = _session.state.value;
+    _metrics = ScrcpySessionMetricsCollector(
+      sessionState: _metricsSessionState,
+      videoCodec: _session.configuration.video.codec.serverName,
+    )..addListener(_reportMetrics);
     widget.audioFocus.addListener(_handleChanged);
     _session.state.addListener(_handleChanged);
     _bindReconnects();
@@ -475,7 +965,7 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
     });
   }
 
-  ScrcpyManagedSession _createManagedSession(
+  DeviceWallManagedSession _createManagedSession(
     _DeviceWallQualityProfile qualityProfile,
   ) => widget.manager.create(
     ScrcpySessionConfiguration(
@@ -530,6 +1020,9 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
 
   void _handleChanged() {
     final state = _session.state.value;
+    if (_metricsSessionState.value != state) {
+      _metricsSessionState.value = state;
+    }
     if ((state == ScrcpySessionState.disconnected ||
             state == ScrcpySessionState.error) &&
         !_disconnectCleanupQueued) {
@@ -586,11 +1079,24 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
       setState(() {
         _disconnectCleanupQueued = false;
         _video = video;
-        _input = connection.input;
+        final connectionInput = connection.input;
+        _input = connectionInput == null
+            ? null
+            : _TouchBroadcastInputController(
+                delegate: connectionInput,
+                onPointer: widget.onPointer,
+                onFailure: widget.onInputFailure,
+              );
         _error = null;
         _audioError = null;
         if (isReconnect) _reconnectCount++;
       });
+      _metrics.attach(
+        video: _video,
+        audio: _audio,
+        reconnectCount: _reconnectCount,
+      );
+      widget.onInputChanged(_input, stateSize(video.value));
 
       final stream = connection.audio;
       if (widget.window.isVirtual) return;
@@ -616,6 +1122,11 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
       }
       audio.addListener(_handleChanged);
       setState(() => _audio = audio);
+      _metrics.attach(
+        video: _video,
+        audio: _audio,
+        reconnectCount: _reconnectCount,
+      );
     } catch (error) {
       if (!identical(_video, video)) {
         try {
@@ -723,6 +1234,8 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
     _video = null;
     _audio = null;
     _input = null;
+    widget.onInputChanged(null, null);
+    _metrics.attach(reconnectCount: _reconnectCount);
     video?.removeListener(_handleChanged);
     audio?.removeListener(_handleChanged);
     if (!widget.window.isVirtual) {
@@ -746,6 +1259,10 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
   void dispose() {
     _disposing = true;
     _qualityTimer?.cancel();
+    _metrics.removeListener(_reportMetrics);
+    _metrics.dispose();
+    _metricsSessionState.dispose();
+    widget.onMetrics(null);
     widget.audioFocus.removeListener(_handleChanged);
     _session.state.removeListener(_handleChanged);
     unawaited(_reconnectSubscription?.cancel());
@@ -776,11 +1293,18 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
         children: <Widget>[
           ListTile(
             dense: true,
-            leading: Icon(
-              widget.window.device.connectionType == AdbConnectionType.network
-                  ? Icons.wifi
-                  : Icons.usb,
-            ),
+            leading: widget.selectionMode
+                ? Checkbox(
+                    value: widget.selected,
+                    onChanged: (value) =>
+                        widget.onSelectionChanged(value ?? false),
+                  )
+                : Icon(
+                    widget.window.device.connectionType ==
+                            AdbConnectionType.network
+                        ? Icons.wifi
+                        : Icons.usb,
+                  ),
             title: Text(widget.window.title),
             subtitle: Text(
               '${widget.window.device.redactedSerial}'
@@ -890,6 +1414,7 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
       if (input == null || state.width == null || state.height == null) {
         return view;
       }
+      widget.onInputChanged(input, stateSize(state));
       return ScrcpyInputLayer(
         controller: input,
         videoSize: Size(state.width!.toDouble(), state.height!.toDouble()),
@@ -897,6 +1422,15 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
       );
     },
   );
+
+  static Size? stateSize(ScrcpyVideoState state) {
+    final width = state.width;
+    final height = state.height;
+    if (width == null || height == null || width <= 0 || height <= 0) {
+      return null;
+    }
+    return Size(width.toDouble(), height.toDouble());
+  }
 
   String get _statusLabel => switch (_session.state.value) {
     ScrcpySessionState.idle => '等待启动',
@@ -956,6 +1490,8 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
 
   String _formatMbps(double value) =>
       value == value.roundToDouble() ? value.toInt().toString() : '$value';
+
+  void _reportMetrics() => widget.onMetrics(_metrics.value);
 }
 
 class _QualityPolicyDialog extends StatefulWidget {
@@ -965,6 +1501,211 @@ class _QualityPolicyDialog extends StatefulWidget {
 
   @override
   State<_QualityPolicyDialog> createState() => _QualityPolicyDialogState();
+}
+
+final class _TouchBroadcastInputController
+    implements ScrcpyInputController, ScrcpyScreenPowerInputController {
+  const _TouchBroadcastInputController({
+    required this.delegate,
+    required this.onPointer,
+    required this.onFailure,
+  });
+
+  final ScrcpyInputController delegate;
+  final ValueChanged<ScrcpyPointerEvent> onPointer;
+  final ValueChanged<Object> onFailure;
+
+  @override
+  Future<void> sendPointer(ScrcpyPointerEvent event) async {
+    try {
+      final status = delegate;
+      if (status is ScrcpyInputTransportStatus &&
+          !(status as ScrcpyInputTransportStatus).isAvailable) {
+        throw StateError('scrcpy control transport is unavailable');
+      }
+      await delegate.sendPointer(event);
+      if (status is ScrcpyInputTransportStatus &&
+          !(status as ScrcpyInputTransportStatus).isAvailable) {
+        throw StateError('scrcpy control transport closed during input');
+      }
+      onPointer(event);
+    } catch (error) {
+      onFailure(error);
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> sendKey({required int keyCode, bool down = true}) =>
+      delegate.sendKey(keyCode: keyCode, down: down);
+
+  @override
+  Future<void> sendText(String text) => delegate.sendText(text);
+
+  @override
+  Future<void> startApplication(ScrcpyApplicationLaunch application) =>
+      delegate.startApplication(application);
+
+  @override
+  Future<void> resizeDisplay({required int width, required int height}) =>
+      delegate.resizeDisplay(width: width, height: height);
+
+  @override
+  Stream<String> get clipboardChanges => delegate.clipboardChanges;
+
+  @override
+  Future<void> requestClipboard({ScrcpyCopyKey copyKey = ScrcpyCopyKey.none}) =>
+      delegate.requestClipboard(copyKey: copyKey);
+
+  @override
+  Future<void> setClipboard(String text, {bool paste = false}) =>
+      delegate.setClipboard(text, paste: paste);
+
+  @override
+  Future<void> sendBackOrScreenOn({bool down = true}) {
+    final input = delegate;
+    if (input is ScrcpyScreenPowerInputController) {
+      return (input as ScrcpyScreenPowerInputController).sendBackOrScreenOn(
+        down: down,
+      );
+    }
+    return input.sendKey(keyCode: ScrcpyAndroidKeyCode.back, down: down);
+  }
+}
+
+final class _TouchBroadcastConfiguration {
+  const _TouchBroadcastConfiguration({
+    required this.sourceId,
+    required this.targetIds,
+  });
+
+  final String sourceId;
+  final Set<String> targetIds;
+}
+
+class _TouchBroadcastDialog extends StatefulWidget {
+  const _TouchBroadcastDialog({
+    required this.windows,
+    required this.videoSizes,
+    required this.initialSourceId,
+    required this.initialTargetIds,
+  });
+
+  final List<_DeviceWallWindow> windows;
+  final Map<String, Size> videoSizes;
+  final String? initialSourceId;
+  final Set<String> initialTargetIds;
+
+  @override
+  State<_TouchBroadcastDialog> createState() => _TouchBroadcastDialogState();
+}
+
+class _TouchBroadcastDialogState extends State<_TouchBroadcastDialog> {
+  late String? _sourceId = widget.initialSourceId;
+  late final Set<String> _targetIds = widget.initialTargetIds.toSet();
+
+  bool _compatible(String targetId) {
+    final source = widget.videoSizes[_sourceId];
+    final target = widget.videoSizes[targetId];
+    if (source == null || target == null) return false;
+    final sameOrientation =
+        (source.width >= source.height) == (target.width >= target.height);
+    if (!sameOrientation) return false;
+    final sourceRatio = source.width / source.height;
+    final targetRatio = target.width / target.height;
+    return ((sourceRatio - targetRatio).abs() / sourceRatio) <= 0.15;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _targetIds.removeWhere((id) => id == _sourceId || !_compatible(id));
+    return AlertDialog(
+      title: const Text('触摸广播'),
+      content: SizedBox(
+        width: 580,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text(
+                '仅广播点击、拖动和长按。不广播键盘、文本、剪贴板、'
+                '鼠标中键/右键及滚轮。',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+              const SizedBox(height: 16),
+              Text('主控窗口', style: Theme.of(context).textTheme.titleSmall),
+              RadioGroup<String>(
+                groupValue: _sourceId,
+                onChanged: (value) => setState(() {
+                  _sourceId = value;
+                  _targetIds.clear();
+                }),
+                child: Column(
+                  children: <Widget>[
+                    for (final window in widget.windows)
+                      RadioListTile<String>(
+                        value: window.id,
+                        title: Text(window.title),
+                        subtitle: Text(_windowDescription(window)),
+                      ),
+                  ],
+                ),
+              ),
+              const Divider(),
+              Text('同步目标', style: Theme.of(context).textTheme.titleSmall),
+              for (final window in widget.windows)
+                if (window.id != _sourceId)
+                  CheckboxListTile(
+                    value: _targetIds.contains(window.id),
+                    title: Text(window.title),
+                    subtitle: Text(
+                      _compatible(window.id)
+                          ? _windowDescription(window)
+                          : '${_windowDescription(window)} · 宽高比/方向不兼容',
+                    ),
+                    onChanged: _compatible(window.id)
+                        ? (selected) => setState(() {
+                            selected ?? false
+                                ? _targetIds.add(window.id)
+                                : _targetIds.remove(window.id);
+                          })
+                        : null,
+                  ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: _sourceId != null && _targetIds.isNotEmpty
+              ? () => Navigator.pop(
+                  context,
+                  _TouchBroadcastConfiguration(
+                    sourceId: _sourceId!,
+                    targetIds: Set<String>.unmodifiable(_targetIds),
+                  ),
+                )
+              : null,
+          icon: const Icon(Icons.touch_app),
+          label: const Text('开启同步'),
+        ),
+      ],
+    );
+  }
+
+  String _windowDescription(_DeviceWallWindow window) {
+    final size = widget.videoSizes[window.id];
+    final dimensions = size == null
+        ? '画面尺寸未就绪'
+        : '${size.width.round()}×${size.height.round()}';
+    return '${window.device.redactedSerial}'
+        '${window.isVirtual ? ' · 虚拟屏' : ' · 主屏'} · $dimensions';
+  }
 }
 
 class _QualityPolicyDialogState extends State<_QualityPolicyDialog> {
@@ -1151,10 +1892,283 @@ class _QualityPolicyDialogState extends State<_QualityPolicyDialog> {
       value == value.roundToDouble() ? '${value.toInt()}' : '$value';
 }
 
+class _DeviceWallMetricsDialog extends StatelessWidget {
+  const _DeviceWallMetricsDialog({
+    required this.revision,
+    required this.windows,
+    required this.sessionMetrics,
+    required this.processMetrics,
+  });
+
+  final ValueListenable<int> revision;
+  final List<_DeviceWallWindow> windows;
+  final Map<String, ScrcpySessionMetricsSnapshot> sessionMetrics;
+  final ScrcpyProcessMetricsCollector processMetrics;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('设备墙性能指标'),
+    content: SizedBox(
+      width: 1050,
+      height: 620,
+      child: ValueListenableBuilder<int>(
+        valueListenable: revision,
+        builder: (context, _, child) {
+          final process = processMetrics.value;
+          final snapshots = sessionMetrics.values.toList(growable: false);
+          final totalVideoRate = snapshots.fold<double>(
+            0,
+            (sum, item) => sum + item.videoBitRate,
+          );
+          final totalAudioRate = snapshots.fold<double>(
+            0,
+            (sum, item) => sum + item.audioBitRate,
+          );
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Wrap(
+                spacing: 20,
+                runSpacing: 8,
+                children: <Widget>[
+                  Text('Session：${snapshots.length}'),
+                  Text('视频总码率：${_rate(totalVideoRate)}'),
+                  Text('音频总码率：${_rate(totalAudioRate)}'),
+                  Text(
+                    '进程 CPU：'
+                    '${process == null ? '—' : '${process.cpuUsagePercent.toStringAsFixed(1)}%'}',
+                  ),
+                  Text(
+                    '工作集：'
+                    '${process == null ? '—' : _bytes(process.workingSetBytes)}',
+                  ),
+                  Text(
+                    '私有内存：'
+                    '${process == null ? '—' : _bytes(process.privateBytes)}',
+                  ),
+                  Text(
+                    '进程线程：'
+                    '${process == null || process.threadCount == 0 ? '—' : process.threadCount}',
+                  ),
+                  const Tooltip(
+                    message: '当前平台未提供可靠的单 Session GPU 归因',
+                    child: Text('进程/Session GPU：—'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '“卡顿”表示传输仍有新数据但解码画面未增加的连续区间；'
+                '端到端延迟尚无统一时钟，因此不显示伪估算值。',
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: Scrollbar(
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SingleChildScrollView(
+                      child: DataTable(
+                        columns: const <DataColumn>[
+                          DataColumn(label: Text('窗口')),
+                          DataColumn(label: Text('状态')),
+                          DataColumn(label: Text('画面/解码器')),
+                          DataColumn(label: Text('FPS')),
+                          DataColumn(label: Text('视频码率')),
+                          DataColumn(label: Text('音频码率')),
+                          DataColumn(label: Text('帧/包')),
+                          DataColumn(label: Text('音频播放/丢弃')),
+                          DataColumn(label: Text('重连/错误/卡顿')),
+                          DataColumn(label: Text('延迟/GPU')),
+                        ],
+                        rows: <DataRow>[
+                          for (final window in windows)
+                            _row(window, sessionMetrics[window.id]),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    ),
+    actions: <Widget>[
+      TextButton.icon(
+        onPressed: () => _copySnapshot(context),
+        icon: const Icon(Icons.copy),
+        label: const Text('复制 JSON 快照'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('关闭'),
+      ),
+    ],
+  );
+
+  DataRow _row(
+    _DeviceWallWindow window,
+    ScrcpySessionMetricsSnapshot? value,
+  ) => DataRow(
+    cells: <DataCell>[
+      DataCell(Text(window.title)),
+      DataCell(Text(value?.sessionState.name ?? '等待数据')),
+      DataCell(
+        Text(
+          value == null
+              ? '—'
+              : '${value.width ?? 0}×${value.height ?? 0} / '
+                    '${value.videoCodec ?? '—'} / ${value.decoder ?? '—'}',
+        ),
+      ),
+      DataCell(Text(value?.framesPerSecond.toStringAsFixed(1) ?? '—')),
+      DataCell(Text(value == null ? '—' : _rate(value.videoBitRate))),
+      DataCell(Text(value == null ? '—' : _rate(value.audioBitRate))),
+      DataCell(
+        Text(
+          value == null
+              ? '—'
+              : '${value.framesRendered}/${value.videoPacketsReceived}',
+        ),
+      ),
+      DataCell(
+        Text(
+          value == null
+              ? '—'
+              : '${value.audioBuffersPlayed}/${value.audioBuffersDropped}',
+        ),
+      ),
+      DataCell(
+        Text(
+          value == null
+              ? '—'
+              : '${value.reconnectCount}/${value.errorCount}/${value.stallCount}',
+        ),
+      ),
+      const DataCell(Text('—/—')),
+    ],
+  );
+
+  Future<void> _copySnapshot(BuildContext context) async {
+    final payload = <String, Object?>{
+      'exportedAt': DateTime.now().toIso8601String(),
+      'process': processMetrics.value?.toJson(),
+      'sessions': <String, Object?>{
+        for (final window in windows)
+          window.id: <String, Object?>{
+            'title': window.title,
+            'deviceSerial': window.device.redactedSerial,
+            'virtualDisplay': window.isVirtual,
+            'metrics': sessionMetrics[window.id]?.toJson(),
+          },
+      },
+    };
+    await Clipboard.setData(
+      ClipboardData(text: const JsonEncoder.withIndent('  ').convert(payload)),
+    );
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('性能快照已复制为 JSON')));
+    }
+  }
+
+  static String _rate(double bitsPerSecond) => bitsPerSecond >= 1000000
+      ? '${(bitsPerSecond / 1000000).toStringAsFixed(2)} Mbps'
+      : '${(bitsPerSecond / 1000).toStringAsFixed(1)} Kbps';
+
+  static String _bytes(int bytes) => bytes >= 1024 * 1024 * 1024
+      ? '${(bytes / 1024 / 1024 / 1024).toStringAsFixed(2)} GiB'
+      : '${(bytes / 1024 / 1024).toStringAsFixed(1)} MiB';
+}
+
+class _BatchResultsDialog extends StatelessWidget {
+  const _BatchResultsDialog({
+    required this.label,
+    required this.snapshot,
+    required this.devices,
+  });
+
+  final String label;
+  final AdbBatchSnapshot snapshot;
+  final List<AdbDevice> devices;
+
+  @override
+  Widget build(BuildContext context) {
+    final bySerial = <String, AdbDevice>{
+      for (final device in devices) device.serial: device,
+    };
+    return AlertDialog(
+      title: Text(label),
+      content: SizedBox(
+        width: 520,
+        child: ListView(
+          shrinkWrap: true,
+          children: <Widget>[
+            for (final item in snapshot.items.values)
+              ListTile(
+                leading: Icon(
+                  _icon(item.state),
+                  color: _color(context, item.state),
+                ),
+                title: Text(
+                  bySerial[item.target]?.model ??
+                      bySerial[item.target]?.device ??
+                      '安卓设备',
+                ),
+                subtitle: Text(
+                  '${bySerial[item.target]?.redactedSerial ?? item.target} · '
+                  '${_label(item.state)}'
+                  '${item.error == null ? '' : '\n${item.error}'}',
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
+
+  static String _label(AdbBatchItemState state) => switch (state) {
+    AdbBatchItemState.queued => '等待中',
+    AdbBatchItemState.running => '执行中',
+    AdbBatchItemState.succeeded => '成功',
+    AdbBatchItemState.failed => '失败',
+    AdbBatchItemState.cancelled => '已取消',
+    AdbBatchItemState.timedOut => '超时',
+  };
+
+  static IconData _icon(AdbBatchItemState state) => switch (state) {
+    AdbBatchItemState.queued => Icons.schedule,
+    AdbBatchItemState.running => Icons.sync,
+    AdbBatchItemState.succeeded => Icons.check_circle,
+    AdbBatchItemState.failed => Icons.error,
+    AdbBatchItemState.cancelled => Icons.cancel,
+    AdbBatchItemState.timedOut => Icons.timer_off,
+  };
+
+  static Color? _color(BuildContext context, AdbBatchItemState state) =>
+      switch (state) {
+        AdbBatchItemState.succeeded => Colors.green,
+        AdbBatchItemState.failed ||
+        AdbBatchItemState.timedOut => Theme.of(context).colorScheme.error,
+        _ => null,
+      };
+}
+
 class _ApplicationPicker extends StatefulWidget {
-  const _ApplicationPicker({required this.applications});
+  const _ApplicationPicker({required this.applications, this.title = '选择应用'});
 
   final List<AdbApplication> applications;
+  final String title;
 
   @override
   State<_ApplicationPicker> createState() => _ApplicationPickerState();
@@ -1176,7 +2190,7 @@ class _ApplicationPickerState extends State<_ApplicationPicker> {
         .where((application) => application.matches(_query))
         .toList(growable: false);
     return AlertDialog(
-      title: const Text('选择应用'),
+      title: Text(widget.title),
       content: SizedBox(
         width: 520,
         height: 560,

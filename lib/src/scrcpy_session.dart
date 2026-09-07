@@ -5,7 +5,12 @@ import 'package:flutter/foundation.dart';
 
 import 'scrcpy_error.dart';
 import 'scrcpy_audio_packet.dart';
+import 'scrcpy_audio.dart';
 import 'scrcpy_display_source.dart';
+import 'native_scrcpy_audio.dart';
+import 'native_scrcpy_video.dart';
+import 'scrcpy_input.dart';
+import 'scrcpy_video.dart';
 import 'scrcpy_video_connection.dart';
 
 enum ScrcpySessionState {
@@ -222,13 +227,19 @@ final class ScrcpySessionConfiguration {
 ///
 /// P0 implements device preparation only. Video and control resources will be
 /// attached behind this same lifecycle in P1-P3.
-final class ScrcpySession {
-  ScrcpySession({
+final class ScrcpyRawSession extends ChangeNotifier {
+  ScrcpyRawSession({
     required this.adbDeviceService,
     required this.configuration,
     this.videoConnector,
-  });
+    String? id,
+  }) : id =
+           id ??
+           'session-${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}' {
+    _state.addListener(notifyListeners);
+  }
 
+  final String id;
   final AdbDeviceService adbDeviceService;
   final ScrcpySessionConfiguration configuration;
   final ScrcpyVideoConnector? videoConnector;
@@ -244,10 +255,149 @@ final class ScrcpySession {
   final StreamController<ScrcpyVideoConnection> _reconnectedController =
       StreamController<ScrcpyVideoConnection>.broadcast(sync: true);
   ScrcpyVideoConnection? _connection;
+  ScrcpyVideoController? _video;
+  ScrcpyAudioController? _audio;
+  ScrcpyVideoConnection? _mediaConnection;
+  StreamSubscription<ScrcpyVideoConnection>? _managedReconnects;
+  Future<void> _mediaChange = Future<void>.value();
   bool _stopRequested = false;
   bool _disposed = false;
 
   ValueListenable<ScrcpySessionState> get state => _state;
+
+  String get deviceSerial => configuration.deviceSerial;
+  ScrcpyVideoController? get video => _video;
+  ScrcpyAudioController? get audio => _audio;
+  ScrcpyInputController? get input => _connection?.input;
+  bool get isConnected => _state.value == ScrcpySessionState.streaming;
+  bool get isControllable => input != null;
+  bool get hasAudio => _audio != null;
+
+  /// Opens a complete, renderable session and owns its media controllers.
+  Future<ScrcpyRawSession> open({
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    _managedReconnects ??= reconnectedConnections.listen(
+      (connection) => _queueMediaReplacement(connection),
+    );
+    final connection = await start(cancellationToken: cancellationToken);
+    await _replaceMedia(connection);
+    return this;
+  }
+
+  void _queueMediaReplacement(ScrcpyVideoConnection connection) {
+    _mediaChange = _mediaChange
+        .catchError((_) {})
+        .then((_) => _replaceMedia(connection));
+    unawaited(
+      _mediaChange.catchError((Object error, StackTrace stackTrace) {
+        if (!_disposed && !_stopRequested) {
+          _setState(ScrcpySessionState.error);
+          if (kDebugMode) {
+            debugPrint('scrcpy media replacement failed: $error');
+          }
+        }
+      }),
+    );
+  }
+
+  Future<void> _replaceMedia(ScrcpyVideoConnection connection) async {
+    if (_disposed || _connection != connection) return;
+    if (_video != null && identical(_mediaConnection, connection)) return;
+    await _releaseMedia();
+    final video = createNativeScrcpyVideoController(connection);
+    ScrcpyAudioController? audio;
+    try {
+      await video.start();
+      final stream = connection.audio;
+      if (stream != null) {
+        audio = createNativeScrcpyAudioController(
+          stream,
+          bitRate: configuration.audio.bitRate,
+        );
+        try {
+          await audio.start();
+        } catch (_) {
+          audio.dispose();
+          audio = null;
+          if (configuration.audioRequired) rethrow;
+        }
+      }
+      if (_disposed || _connection != connection) {
+        await audio?.stop();
+        audio?.dispose();
+        await video.stop();
+        video.dispose();
+        return;
+      }
+      _video = video;
+      _audio = audio;
+      _mediaConnection = connection;
+      notifyListeners();
+    } catch (_) {
+      await audio?.stop();
+      audio?.dispose();
+      await video.stop();
+      video.dispose();
+      rethrow;
+    }
+  }
+
+  Future<void> _releaseMedia() async {
+    final audio = _audio;
+    final video = _video;
+    _audio = null;
+    _video = null;
+    _mediaConnection = null;
+    if (!_disposed) notifyListeners();
+    Object? firstError;
+    StackTrace? firstStackTrace;
+    try {
+      await audio?.stop();
+    } catch (error, stackTrace) {
+      firstError = error;
+      firstStackTrace = stackTrace;
+    } finally {
+      audio?.dispose();
+    }
+    try {
+      await video?.stop();
+    } catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
+    } finally {
+      video?.dispose();
+    }
+    if (firstError != null) {
+      Error.throwWithStackTrace(firstError, firstStackTrace!);
+    }
+  }
+
+  Future<void> setMuted(bool muted) async => _audio?.setMuted(muted);
+
+  Future<void> setVolume(double volume) async => _audio?.setVolume(volume);
+
+  Future<void> home() => _sendKeyClick(ScrcpyAndroidKeyCode.home);
+
+  Future<void> back() => _sendKeyClick(ScrcpyAndroidKeyCode.back);
+
+  Future<void> power() => _sendKeyClick(ScrcpyAndroidKeyCode.power);
+
+  Future<void> sendText(String text) => _requireInput().sendText(text);
+
+  Future<void> _sendKeyClick(int keyCode) async {
+    final controller = _requireInput();
+    await controller.sendKey(keyCode: keyCode);
+    await controller.sendKey(keyCode: keyCode, down: false);
+  }
+
+  ScrcpyInputController _requireInput() {
+    final controller = input;
+    if (controller == null) {
+      throw StateError('Session input is not available: $id');
+    }
+    return controller;
+  }
 
   /// Emits only replacement connections created after an unexpected
   /// disconnect. The initial connection is returned by [start].
@@ -352,6 +502,18 @@ final class ScrcpySession {
       await _starting;
     } catch (_) {
       // Startup errors are reported by the start caller.
+    }
+    await _managedReconnects?.cancel();
+    _managedReconnects = null;
+    try {
+      await _mediaChange;
+    } catch (_) {
+      // The media error was already reported by the operation which started it.
+    }
+    try {
+      await _releaseMedia();
+    } catch (_) {
+      // Disconnected native sinks are still disposed by _releaseMedia().
     }
     final connection = _connection;
     _connection = null;
@@ -462,12 +624,22 @@ final class ScrcpySession {
     }
   }
 
+  @override
   void dispose() {
     if (_disposed) return;
     _disposed = true;
     _stopRequested = true;
     _cancelReconnect();
     _state.value = ScrcpySessionState.disposed;
+    unawaited(_managedReconnects?.cancel());
+    _managedReconnects = null;
+    final video = _video;
+    final audio = _audio;
+    _video = null;
+    _audio = null;
+    _mediaConnection = null;
+    audio?.dispose();
+    video?.dispose();
     final starting = _starting;
     final connection = _connection;
     _connection = null;
@@ -478,7 +650,14 @@ final class ScrcpySession {
       await (_connection ?? connection)?.close();
       _connection = null;
     }());
+    _state.removeListener(notifyListeners);
     _state.dispose();
     unawaited(_reconnectedController.close());
+    super.dispose();
+  }
+
+  Future<void> close() async {
+    await stop();
+    dispose();
   }
 }

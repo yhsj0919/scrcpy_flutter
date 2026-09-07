@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:test/test.dart';
 import 'package:adb_client/adb_client.dart';
 
@@ -80,5 +82,58 @@ void main() {
     await expectLater(monitor.start(), throwsArgumentError);
     await monitor.close();
     await expectLater(monitor.refresh(), throwsStateError);
+  });
+
+  test('watchDevices starts immediately and stops when cancelled', () async {
+    const device = AdbDevice(
+      serial: 'usb-1',
+      state: AdbDeviceState.device,
+      connectionType: AdbConnectionType.usb,
+    );
+    final client = _SequenceAdbDevices(<List<AdbDevice>>[
+      <AdbDevice>[device],
+    ]);
+    final firstSnapshot = Completer<void>();
+    final subscription = AdbToolkit(client)
+        .watchDevices(interval: const Duration(milliseconds: 10))
+        .listen((_) {
+          if (!firstSnapshot.isCompleted) firstSnapshot.complete();
+        });
+
+    await firstSnapshot.future;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(client.calls, greaterThanOrEqualTo(1));
+
+    await subscription.cancel();
+    final callsAfterCancel = client.calls;
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(client.calls, callsAfterCancel);
+  });
+
+  test('watchDevices can suppress unchanged polling snapshots', () async {
+    const device = AdbDevice(
+      serial: 'usb-1',
+      state: AdbDeviceState.device,
+      connectionType: AdbConnectionType.usb,
+    );
+    final snapshots = <AdbDeviceSnapshot>[];
+    final firstSnapshot = Completer<void>();
+    final subscription =
+        AdbToolkit(
+              _SequenceAdbDevices(<List<AdbDevice>>[
+                <AdbDevice>[device],
+              ]),
+            )
+            .watchDevices(interval: const Duration(milliseconds: 10))
+            .listen((snapshot) {
+              snapshots.add(snapshot);
+              if (!firstSnapshot.isCompleted) firstSnapshot.complete();
+            });
+
+    await firstSnapshot.future;
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    await subscription.cancel();
+    expect(snapshots, hasLength(1));
+    expect(snapshots.single.devices, <AdbDevice>[device]);
   });
 }

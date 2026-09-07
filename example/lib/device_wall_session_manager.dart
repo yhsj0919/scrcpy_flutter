@@ -2,14 +2,11 @@ import 'dart:async';
 
 import 'package:adb_client/adb_client.dart';
 import 'package:flutter/foundation.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
-import 'scrcpy_client.dart';
-import 'scrcpy_session.dart';
-import 'scrcpy_video_connection.dart';
-
-/// Read-only view of a session owned by [ScrcpySessionManager].
-final class ScrcpyManagedSession {
-  const ScrcpyManagedSession._({
+/// Example-only session view used by the device-wall composition.
+final class DeviceWallManagedSession {
+  const DeviceWallManagedSession._({
     required this.id,
     required this.configuration,
     required this._session,
@@ -17,7 +14,7 @@ final class ScrcpyManagedSession {
 
   final String id;
   final ScrcpySessionConfiguration configuration;
-  final ScrcpySession _session;
+  final ScrcpyRawSession _session;
 
   String get deviceSerial => configuration.deviceSerial;
   ValueListenable<ScrcpySessionState> get state => _session.state;
@@ -30,8 +27,8 @@ final class ScrcpyManagedSession {
 /// The manager owns the sessions and their connections. Video and audio
 /// controllers created from a returned connection remain owned by the caller
 /// and must be released before removing the corresponding managed session.
-final class ScrcpySessionManager extends ChangeNotifier {
-  ScrcpySessionManager({required this.client, this.maxSessions = 16}) {
+final class DeviceWallSessionManager extends ChangeNotifier {
+  DeviceWallSessionManager({required this.client, this.maxSessions = 16}) {
     final limit = maxSessions;
     if (limit != null && limit <= 0) {
       throw RangeError.value(limit, 'maxSessions', 'must be positive');
@@ -48,20 +45,20 @@ final class ScrcpySessionManager extends ChangeNotifier {
   bool _closing = false;
   bool _disposed = false;
 
-  List<ScrcpyManagedSession> get sessions =>
-      List<ScrcpyManagedSession>.unmodifiable(
+  List<DeviceWallManagedSession> get sessions =>
+      List<DeviceWallManagedSession>.unmodifiable(
         _entries.values.map((entry) => entry.view),
       );
 
   String? get focusedId => _focusedId;
 
-  ScrcpyManagedSession? get focusedSession => session(_focusedId);
+  DeviceWallManagedSession? get focusedSession => session(_focusedId);
 
-  ScrcpyManagedSession? session(String? id) =>
+  DeviceWallManagedSession? session(String? id) =>
       id == null ? null : _entries[id]?.view;
 
-  List<ScrcpyManagedSession> sessionsForDevice(String deviceSerial) =>
-      List<ScrcpyManagedSession>.unmodifiable(
+  List<DeviceWallManagedSession> sessionsForDevice(String deviceSerial) =>
+      List<DeviceWallManagedSession>.unmodifiable(
         _entries.values
             .where(
               (entry) => entry.view.configuration.deviceSerial == deviceSerial,
@@ -69,22 +66,27 @@ final class ScrcpySessionManager extends ChangeNotifier {
             .map((entry) => entry.view),
       );
 
-  Map<String, List<ScrcpyManagedSession>> get sessionsByDevice {
-    final grouped = <String, List<ScrcpyManagedSession>>{};
+  Map<String, List<DeviceWallManagedSession>> get sessionsByDevice {
+    final grouped = <String, List<DeviceWallManagedSession>>{};
     for (final entry in _entries.values) {
       grouped
-          .putIfAbsent(entry.view.deviceSerial, () => <ScrcpyManagedSession>[])
+          .putIfAbsent(
+            entry.view.deviceSerial,
+            () => <DeviceWallManagedSession>[],
+          )
           .add(entry.view);
     }
-    return Map<String, List<ScrcpyManagedSession>>.unmodifiable(
+    return Map<String, List<DeviceWallManagedSession>>.unmodifiable(
       grouped.map(
-        (serial, values) =>
-            MapEntry(serial, List<ScrcpyManagedSession>.unmodifiable(values)),
+        (serial, values) => MapEntry(
+          serial,
+          List<DeviceWallManagedSession>.unmodifiable(values),
+        ),
       ),
     );
   }
 
-  ScrcpyManagedSession create(
+  DeviceWallManagedSession create(
     ScrcpySessionConfiguration configuration, {
     String? id,
   }) {
@@ -106,7 +108,7 @@ final class ScrcpySessionManager extends ChangeNotifier {
       }
     }
 
-    final view = ScrcpyManagedSession._(
+    final view = DeviceWallManagedSession._(
       id: resolvedId,
       configuration: configuration,
       session: session,
@@ -237,7 +239,7 @@ final class ScrcpySessionManager extends ChangeNotifier {
 final class _ManagedSessionEntry {
   _ManagedSessionEntry({required this.view, required this.listener});
 
-  final ScrcpyManagedSession view;
+  final DeviceWallManagedSession view;
   final VoidCallback listener;
   Future<void>? removal;
 }

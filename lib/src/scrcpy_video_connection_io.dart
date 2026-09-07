@@ -718,7 +718,10 @@ final class _IoScrcpyAudioStream implements ScrcpyAudioStream {
 }
 
 final class _IoScrcpyInputController
-    implements ScrcpyInputController, ScrcpyScreenPowerInputController {
+    implements
+        ScrcpyInputController,
+        ScrcpyScreenPowerInputController,
+        ScrcpyInputTransportStatus {
   _IoScrcpyInputController(this._socket, {required this.onTransportClosed}) {
     _subscription = _socket.chunks.listen(
       _onDeviceData,
@@ -742,6 +745,9 @@ final class _IoScrcpyInputController
   bool _disposed = false;
   bool _transportClosedReported = false;
   final Map<int, (int, int)> _activePointerSizes = <int, (int, int)>{};
+
+  @override
+  bool get isAvailable => !_closed && !_disposed;
 
   void updateVideoSize(int width, int height) {
     _width = width;

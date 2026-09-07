@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:adb_client/adb_client.dart';
-import 'package:scrcpy_flutter/scrcpy_flutter.dart';
+import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 import 'device_wall.dart';
 import 'virtual_display_defaults.dart';
@@ -726,7 +726,7 @@ class DeviceSessionPage extends StatefulWidget {
 enum _AudioPlaybackTarget { computer, phone }
 
 class _DeviceSessionPageState extends State<DeviceSessionPage> {
-  late ScrcpySession _session;
+  late ScrcpyRawSession _session;
   AdbDeviceStatusMonitor? _statusMonitor;
   StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
   StreamSubscription<AdbDeviceStatus>? _statusSubscription;
@@ -773,7 +773,7 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     _prepare();
   }
 
-  ScrcpySession _createSession() => widget.client.createSession(
+  ScrcpyRawSession _createSession() => widget.client.createSession(
     ScrcpySessionConfiguration(
       deviceSerial: widget.device.serial,
       controlEnabled: true,
