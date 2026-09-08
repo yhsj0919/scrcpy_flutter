@@ -29,6 +29,10 @@ Windows 默认使用插件内置的 ADB 和 scrcpy server，宿主无需安装 A
 final session = await scrcpy.createSession(
   deviceSerial: device.serial,
   audioEnabled: true,
+  audio: const ScrcpyAudioOptions(
+    initiallyMuted: false,
+    initialVolume: 1,
+  ),
   video: const ScrcpyVideoOptions(
     maxSize: 1920,
     maxFps: 60,
@@ -44,6 +48,27 @@ ScrcpyView(session: session);
 ```dart
 await scrcpy.removeSession(session.id);
 ```
+
+## 截图
+
+截图直接复制 Session 原生解码器的最后一帧，不调用 ADB、不暂停视频，也不触发重连：
+
+```dart
+final screenshot = await session.captureFrame();
+await screenshot.saveToFile(r'D:\captures\device.png');
+```
+
+`ScrcpyScreenshot` 同时提供 `width`、`height` 和 PNG 格式的 `pngBytes`，宿主可以自行上传、预览或写入其他存储。尚未解出首帧、Session 已停止以及文件写入失败均抛出 `ScrcpyException`，错误码为 `ScrcpyErrorCode.captureFailure`。
+
+## 屏幕录制
+
+```dart
+await session.startRecording(r'D:\captures\device.mp4');
+// ...
+final frames = await session.stopRecording();
+```
+
+Windows 后端将 scrcpy 的 H.264 编码包按原始 PTS 直接封装为 MP4，不重新编码。当前版本先提供视频录制，不包含音频；开始录制后会等待下一个关键帧，停止、旋转重建或关闭 Session 时会完成 MP4 封装。
 
 ## 虚拟屏
 
@@ -83,6 +108,8 @@ await session.power();
 await session.sendText('hello');
 await session.setMuted(true);
 await session.setVolume(0.5);
+await session.startApplication('com.example.app');
+await session.resizeDisplay(width: 1080, height: 1920);
 ```
 
 View 默认处理鼠标、触摸和键盘：左键触摸，中键 Home，右键 `BACK_OR_SCREEN_ON`。坐标转换、旋转、黑边和边缘坐标由内部处理。

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'scrcpy_audio.dart';
 import 'scrcpy_session.dart';
 import 'scrcpy_video.dart';
+import 'scrcpy_metrics_writer.dart';
 
 final class ScrcpySessionMetricsSnapshot {
   const ScrcpySessionMetricsSnapshot({
@@ -100,10 +102,14 @@ final class ScrcpySessionMetricsCollector extends ChangeNotifier {
     required this.sessionState,
     required this.videoCodec,
     this.interval = const Duration(seconds: 1),
+    this.historyLimit = 300,
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now {
     if (interval <= Duration.zero) {
       throw ArgumentError.value(interval, 'interval');
+    }
+    if (historyLimit <= 0) {
+      throw ArgumentError.value(historyLimit, 'historyLimit');
     }
     sessionState.addListener(_sample);
     _timer = Timer.periodic(interval, (_) => _sample());
@@ -113,6 +119,7 @@ final class ScrcpySessionMetricsCollector extends ChangeNotifier {
   final ValueListenable<ScrcpySessionState> sessionState;
   final String videoCodec;
   final Duration interval;
+  final int historyLimit;
   final DateTime Function() _clock;
   ScrcpyVideoController? _video;
   ScrcpyAudioController? _audio;
@@ -128,8 +135,10 @@ final class ScrcpySessionMetricsCollector extends ChangeNotifier {
   bool _wasStalled = false;
   bool _disposed = false;
   ScrcpySessionMetricsSnapshot? _value;
+  final List<ScrcpySessionMetricsSnapshot> _history = [];
 
   ScrcpySessionMetricsSnapshot? get value => _value;
+  List<ScrcpySessionMetricsSnapshot> get history => List.unmodifiable(_history);
 
   @visibleForTesting
   void sampleNow() => _sample();
@@ -221,6 +230,8 @@ final class ScrcpySessionMetricsCollector extends ChangeNotifier {
       errorCount: _errorCount,
       stallCount: _stallCount,
     );
+    _history.add(_value!);
+    if (_history.length > historyLimit) _history.removeAt(0);
     notifyListeners();
   }
 
@@ -262,9 +273,15 @@ final class ScrcpyProcessMetricsSnapshot {
 }
 
 final class ScrcpyProcessMetricsCollector extends ChangeNotifier {
-  ScrcpyProcessMetricsCollector({this.interval = const Duration(seconds: 1)}) {
+  ScrcpyProcessMetricsCollector({
+    this.interval = const Duration(seconds: 1),
+    this.historyLimit = 300,
+  }) {
     if (interval <= Duration.zero) {
       throw ArgumentError.value(interval, 'interval');
+    }
+    if (historyLimit <= 0) {
+      throw ArgumentError.value(historyLimit, 'historyLimit');
     }
     _timer = Timer.periodic(interval, (_) => unawaited(sample()));
     unawaited(sample());
@@ -272,14 +289,17 @@ final class ScrcpyProcessMetricsCollector extends ChangeNotifier {
 
   static const MethodChannel _channel = MethodChannel('scrcpy_flutter/video');
   final Duration interval;
+  final int historyLimit;
   Timer? _timer;
   DateTime? _previousAt;
   int? _previousCpuTime100ns;
   bool _sampling = false;
   bool _disposed = false;
   ScrcpyProcessMetricsSnapshot? _value;
+  final List<ScrcpyProcessMetricsSnapshot> _history = [];
 
   ScrcpyProcessMetricsSnapshot? get value => _value;
+  List<ScrcpyProcessMetricsSnapshot> get history => List.unmodifiable(_history);
 
   Future<void> sample() async {
     if (_disposed || _sampling) return;
@@ -313,6 +333,8 @@ final class ScrcpyProcessMetricsCollector extends ChangeNotifier {
         privateBytes: values['privateBytes'] as int? ?? 0,
         threadCount: values['threadCount'] as int? ?? 0,
       );
+      _history.add(_value!);
+      if (_history.length > historyLimit) _history.removeAt(0);
       notifyListeners();
     } on MissingPluginException {
       // Process metrics are optional on platforms without a native sampler.
@@ -330,4 +352,93 @@ final class ScrcpyProcessMetricsCollector extends ChangeNotifier {
     _timer?.cancel();
     super.dispose();
   }
+}
+
+final class ScrcpyMetricsAggregate {
+  const ScrcpyMetricsAggregate({
+    required this.sessionCount,
+    required this.streamingCount,
+    required this.totalFramesPerSecond,
+    required this.totalVideoBitRate,
+    required this.totalAudioBitRate,
+    required this.totalErrors,
+    required this.totalStalls,
+    required this.totalReconnects,
+  });
+
+  factory ScrcpyMetricsAggregate.fromSessions(
+    Iterable<ScrcpySessionMetricsSnapshot> sessions,
+  ) {
+    final values = sessions.toList(growable: false);
+    return ScrcpyMetricsAggregate(
+      sessionCount: values.length,
+      streamingCount: values
+          .where((item) => item.sessionState == ScrcpySessionState.streaming)
+          .length,
+      totalFramesPerSecond: values.fold(0, (sum, item) => sum + item.framesPerSecond),
+      totalVideoBitRate: values.fold(0, (sum, item) => sum + item.videoBitRate),
+      totalAudioBitRate: values.fold(0, (sum, item) => sum + item.audioBitRate),
+      totalErrors: values.fold(0, (sum, item) => sum + item.errorCount),
+      totalStalls: values.fold(0, (sum, item) => sum + item.stallCount),
+      totalReconnects: values.fold(0, (sum, item) => sum + item.reconnectCount),
+    );
+  }
+
+  final int sessionCount;
+  final int streamingCount;
+  final double totalFramesPerSecond;
+  final double totalVideoBitRate;
+  final double totalAudioBitRate;
+  final int totalErrors;
+  final int totalStalls;
+  final int totalReconnects;
+
+  Map<String, Object?> toJson() => {
+    'sessionCount': sessionCount,
+    'streamingCount': streamingCount,
+    'totalFramesPerSecond': totalFramesPerSecond,
+    'totalVideoBitRate': totalVideoBitRate,
+    'totalAudioBitRate': totalAudioBitRate,
+    'totalErrors': totalErrors,
+    'totalStalls': totalStalls,
+    'totalReconnects': totalReconnects,
+  };
+}
+
+final class ScrcpyDiagnosticsReport {
+  ScrcpyDiagnosticsReport({
+    required this.generatedAt,
+    required this.sessions,
+    required this.process,
+    Map<String, Object?> metadata = const {},
+  }) : metadata = Map.unmodifiable(metadata);
+
+  final DateTime generatedAt;
+  final Map<String, List<ScrcpySessionMetricsSnapshot>> sessions;
+  final List<ScrcpyProcessMetricsSnapshot> process;
+  final Map<String, Object?> metadata;
+
+  Map<String, Object?> toJson() {
+    final latest = sessions.values
+        .where((history) => history.isNotEmpty)
+        .map((history) => history.last);
+    return {
+      'schemaVersion': 1,
+      'generatedAt': generatedAt.toIso8601String(),
+      'metadata': metadata,
+      'aggregate': ScrcpyMetricsAggregate.fromSessions(latest).toJson(),
+      'process': process.map((item) => item.toJson()).toList(),
+      'sessions': {
+        for (final entry in sessions.entries)
+          entry.key: entry.value.map((item) => item.toJson()).toList(),
+      },
+    };
+  }
+
+  String encode({bool pretty = true}) =>
+      (pretty ? const JsonEncoder.withIndent('  ') : const JsonEncoder())
+          .convert(toJson());
+
+  Future<void> saveToFile(String path) =>
+      writeScrcpyMetrics(path, encode(pretty: true));
 }

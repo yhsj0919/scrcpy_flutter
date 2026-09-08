@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'scrcpy_error.dart';
+import 'scrcpy_capture.dart';
+import 'scrcpy_input.dart';
 import 'scrcpy_video.dart';
 import 'scrcpy_video_connection.dart';
 import 'scrcpy_video_packet.dart';
@@ -30,9 +32,110 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
   DateTime? _lastStatsAt;
   Future<void> _sessionChange = Future<void>.value();
   Future<void>? _stopping;
+  bool _isRecording = false;
 
   @override
   ScrcpyVideoState get value => _value;
+
+  @override
+  bool get isRecording => _isRecording;
+
+  @override
+  Future<void> startRecording(String path) async {
+    final textureId = _textureId;
+    if (_disposed || textureId == null) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.recordingFailure,
+        'This video stream is not active',
+      );
+    }
+    if (_isRecording) throw StateError('Video recording is already active');
+    try {
+      await _channel.invokeMethod<void>('startRecording', <String, Object>{
+        'textureId': textureId,
+        'path': path,
+      });
+      _isRecording = true;
+      final input = _connection.input;
+      if (input is ScrcpyVideoResetInputController) {
+        await (input as ScrcpyVideoResetInputController).resetVideo();
+      }
+    } catch (error) {
+      if (_isRecording) {
+        _isRecording = false;
+        try {
+          await _channel.invokeMethod<int>('stopRecording', <String, Object>{
+            'textureId': textureId,
+          });
+        } catch (_) {
+          // Preserve the startup error.
+        }
+      }
+      throw ScrcpyException(
+        ScrcpyErrorCode.recordingFailure,
+        'Unable to start video recording',
+        cause: error,
+      );
+    }
+  }
+
+  @override
+  Future<int> stopRecording() async {
+    final textureId = _textureId;
+    if (!_isRecording) return 0;
+    _isRecording = false;
+    if (textureId == null) return 0;
+    try {
+      return await _channel.invokeMethod<int>('stopRecording', <String, Object>{
+            'textureId': textureId,
+          }) ??
+          0;
+    } catch (error) {
+      throw ScrcpyException(
+        ScrcpyErrorCode.recordingFailure,
+        'Unable to finalize video recording',
+        cause: error,
+      );
+    }
+  }
+
+  @override
+  Future<ScrcpyScreenshot> captureFrame() async {
+    final textureId = _textureId;
+    if (_disposed || textureId == null) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.captureFailure,
+        'No decoded video frame is available',
+      );
+    }
+    try {
+      final frame = await _channel.invokeMapMethod<String, Object?>(
+        'captureFrame',
+        <String, Object>{'textureId': textureId},
+      );
+      if (frame == null || _textureId != textureId) {
+        throw StateError('Video frame became unavailable during capture');
+      }
+      final width = frame['width'] as int?;
+      final height = frame['height'] as int?;
+      final pixels = frame['pixels'] as Uint8List?;
+      if (width == null || height == null || pixels == null) {
+        throw StateError('Native video backend returned an invalid frame');
+      }
+      return await ScrcpyScreenshot.fromRgba(
+        width: width,
+        height: height,
+        pixels: pixels,
+      );
+    } catch (error) {
+      if (error is ScrcpyException) rethrow;
+      throw ScrcpyException(
+        ScrcpyErrorCode.captureFailure,
+        'Unable to capture the current video frame',
+        cause: error,
+      );
+    }
+  }
 
   void _setValue(ScrcpyVideoState value) {
     if (_disposed) return;
@@ -166,6 +269,7 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
     try {
       final oldTextureId = _textureId;
       if (oldTextureId != null) {
+        await stopRecording();
         await _channel.invokeMethod<void>('dispose', <String, Object>{
           'textureId': oldTextureId,
         });
@@ -286,6 +390,9 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
     _lastFrameCount = 0;
     _lastStatsAt = null;
     final textureId = _textureId;
+    if (_isRecording) {
+      await attempt(stopRecording);
+    }
     _textureId = null;
     if (textureId != null) {
       await attempt(

@@ -107,6 +107,19 @@ final class _FakeVideoController extends ChangeNotifier
 
   @override
   Future<void> stop() async {}
+
+  @override
+  Future<ScrcpyScreenshot> captureFrame() =>
+      throw UnimplementedError('Not used by this test');
+
+  @override
+  bool get isRecording => false;
+
+  @override
+  Future<void> startRecording(String path) async {}
+
+  @override
+  Future<int> stopRecording() async => 0;
 }
 
 final class _FakeAudioController extends ChangeNotifier

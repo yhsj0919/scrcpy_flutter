@@ -83,6 +83,15 @@ ScrcpyView(session: session);
 
 `ScrcpySession` 自动持有连接、视频解码器、音频播放器、输入通道及重连后的替换资源。普通接入方不需要直接创建 `ScrcpyVideoConnection`、`ScrcpyVideoController` 或 `ScrcpyAudioController`。
 
+截取当前解码画面并保存 PNG：
+
+```dart
+final screenshot = await session.captureFrame();
+await screenshot.saveToFile(r'D:\captures\device.png');
+```
+
+该操作复用当前解码帧，不会暂停画面或重建 Session。也可直接使用 `screenshot.pngBytes` 交给宿主自己的存储或上传逻辑。
+
 Windows 构建默认随插件分发固定版本的 ADB、其运行库和匹配版本的 `scrcpy-server`，宿主机器不需要预装 Android SDK，也不依赖系统 `PATH`。
 
 如产品需要自行托管和校验二进制，可以覆盖路径：

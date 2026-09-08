@@ -6,6 +6,8 @@ enum ScrcpyErrorCode {
   connectionFailure,
   protocolFailure,
   videoFailure,
+  captureFailure,
+  recordingFailure,
   cancelled,
 }
 
@@ -17,5 +19,7 @@ final class ScrcpyException implements Exception {
   final Object? cause;
 
   @override
-  String toString() => 'ScrcpyException($code, $message)';
+  String toString() => cause == null
+      ? 'ScrcpyException($code, $message)'
+      : 'ScrcpyException($code, $message, cause: $cause)';
 }

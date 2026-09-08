@@ -5,6 +5,7 @@ import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 import 'device_wall.dart';
+import 'screenshot_helper.dart';
 import 'virtual_display_defaults.dart';
 import 'virtual_display_workspace.dart';
 
@@ -726,9 +727,9 @@ class DeviceSessionPage extends StatefulWidget {
 enum _AudioPlaybackTarget { computer, phone }
 
 class _DeviceSessionPageState extends State<DeviceSessionPage> {
-  late ScrcpyRawSession _session;
+  late final ScrcpyManager _scrcpy;
+  ScrcpySession? _session;
   AdbDeviceStatusMonitor? _statusMonitor;
-  StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
   StreamSubscription<AdbDeviceStatus>? _statusSubscription;
   Object? _error;
   ScrcpyVideoController? _videoController;
@@ -762,37 +763,35 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   @override
   void initState() {
     super.initState();
+    _scrcpy = ScrcpyManager.fromClient(widget.client, maxSessions: 1);
     final source = widget.displaySource;
     if (source is ScrcpyVirtualDisplaySource) {
       _virtualDisplayWidth = source.width ?? 1280;
       _virtualDisplayHeight = source.height ?? 960;
     }
-    _session = _createSession();
     unawaited(_restartStatusMonitor(_statusIntervalSeconds));
-    _bindReconnects();
     _prepare();
   }
 
-  ScrcpyRawSession _createSession() => widget.client.createSession(
-    ScrcpySessionConfiguration(
-      deviceSerial: widget.device.serial,
-      controlEnabled: true,
-      audioEnabled: _audioPlaybackTarget == _AudioPlaybackTarget.computer,
-      audio: ScrcpyAudioOptions(
-        codec: ScrcpyAudioCodec.opus,
-        source: ScrcpyAudioSource.automatic,
-        duplicateOnDevice: false,
-      ),
-      displaySource: widget.displaySource,
-      reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
-      video: ScrcpyVideoOptions(
-        maxSize: _maxSize,
-        maxFps: _maxFps,
-        bitRate: _bitRateMbps * 1000 * 1000,
-        codec: _videoCodec,
-        encoder: _videoEncoder,
-      ),
+  Future<ScrcpySession> _createSession() => _scrcpy.createSession(
+    deviceSerial: widget.device.serial,
+    controlEnabled: true,
+    audioEnabled: _audioPlaybackTarget == _AudioPlaybackTarget.computer,
+    audio: const ScrcpyAudioOptions(
+      codec: ScrcpyAudioCodec.opus,
+      source: ScrcpyAudioSource.automatic,
+      duplicateOnDevice: false,
     ),
+    display: widget.displaySource,
+    reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
+    video: ScrcpyVideoOptions(
+      maxSize: _maxSize,
+      maxFps: _maxFps,
+      bitRate: _bitRateMbps * 1000 * 1000,
+      codec: _videoCodec,
+      encoder: _videoEncoder,
+    ),
+    start: false,
   );
 
   Future<void> _restartStatusMonitor(int seconds) async {
@@ -823,30 +822,28 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     }
   }
 
-  void _replaceSession(void Function() updateOptions) {
-    unawaited(_reconnectSubscription?.cancel());
-    _session.dispose();
-    setState(() {
-      updateOptions();
-      _session = _createSession();
-    });
-    _bindReconnects();
-  }
-
-  void _bindReconnects() {
-    _reconnectSubscription = _session.reconnectedConnections.listen(
-      (connection) =>
-          unawaited(_attachConnection(connection, isReconnect: true)),
-      onError: (Object error) {
-        if (mounted) setState(() => _error = error);
-      },
-    );
+  Future<void> _replaceSession(void Function() updateOptions) async {
+    final previous = _session;
+    if (previous != null) {
+      previous.removeListener(_handleSessionChanged);
+      await _scrcpy.removeSession(previous.id);
+    }
+    updateOptions();
+    final replacement = await _createSession();
+    replacement.addListener(_handleSessionChanged);
+    if (mounted) setState(() => _session = replacement);
   }
 
   Future<void> _prepare() async {
     setState(() => _error = null);
     try {
-      await _session.prepare();
+      final session = await _createSession();
+      session.addListener(_handleSessionChanged);
+      if (!mounted) {
+        await _scrcpy.removeSession(session.id);
+        return;
+      }
+      setState(() => _session = session);
       final details = await widget.client.adbToolkit.getDeviceDetails(
         widget.device,
       );
@@ -876,13 +873,15 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
 
   Future<void> _startVideo() async {
     if (_startingVideo || _videoController != null) return;
+    final session = _session;
+    if (session == null) return;
     setState(() {
       _startingVideo = true;
       _error = null;
     });
     try {
-      final connection = await _session.start();
-      await _attachConnection(connection);
+      await session.start();
+      await _syncSessionResources();
     } catch (error) {
       if (mounted) setState(() => _error = error);
     } finally {
@@ -890,89 +889,64 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     }
   }
 
-  Future<void> _attachConnection(
-    ScrcpyVideoConnection connection, {
-    bool isReconnect = false,
-  }) async {
+  void _handleSessionChanged() {
+    unawaited(_syncSessionResources());
+  }
+
+  Future<void> _syncSessionResources() async {
+    final session = _session;
+    if (session == null) return;
     final previousVideo = _videoController;
     final previousAudio = _audioController;
     final previousClipboard = _clipboardSync;
-    await previousClipboard?.stop();
-    if (previousAudio != null) {
-      try {
-        await previousAudio.stop();
-      } catch (_) {
-        // A disconnected audio socket may already have stopped the player.
-      }
-      previousAudio.dispose();
-    }
-    if (previousVideo != null) {
-      try {
-        await previousVideo.stop();
-      } catch (_) {
-        // An unexpected disconnect may already have closed the old transport.
-      }
-      previousVideo.dispose();
-    }
-    final controller = createNativeScrcpyVideoController(connection);
-    final audioStream = connection.audio;
-    final audio = audioStream == null
-        ? null
-        : createNativeScrcpyAudioController(audioStream);
-    final codec = await connection.codec;
-    if (!mounted) {
-      controller.dispose();
-      audio?.dispose();
-      await connection.close();
+    final controller = session.video;
+    final audio = session.audio;
+    final input = session.input;
+    if (identical(previousVideo, controller) &&
+        identical(previousAudio, audio) &&
+        identical(_inputController, input)) {
+      if (mounted) setState(() {});
       return;
     }
+    if (!identical(_inputController, input)) {
+      await previousClipboard?.stop();
+    }
+    if (!mounted || !identical(_session, session)) return;
+    if (previousVideo != null && controller != null) _reconnectCount++;
+    final clipboard = input == null
+        ? null
+        : ScrcpyClipboardSynchronizer(
+            input,
+            onError: (error, _) {
+              if (mounted) setState(() => _error = error);
+            },
+          );
     setState(() {
       _videoController = controller;
       _audioController = audio;
-      _inputController = connection.input;
-      _connectionInfo = connection.info;
-      _activeCodec = codec;
-      if (isReconnect) _reconnectCount++;
-      _clipboardSync = connection.input == null
-          ? null
-          : ScrcpyClipboardSynchronizer(
-              connection.input!,
-              onError: (error, _) {
-                if (mounted) setState(() => _error = error);
-              },
-            );
+      _inputController = input;
+      _connectionInfo = null;
+      _activeCodec = null;
+      _clipboardSync = clipboard;
       _clipboardSyncEnabled = false;
       _error = null;
       _audioError = null;
     });
-    await controller.start();
     if (audio != null) {
       try {
         await audio.setVolume(_audioVolume);
         await audio.setMuted(_audioMuted);
-        await audio.start();
       } catch (error) {
-        audio.dispose();
-        if (mounted) {
-          setState(() {
-            if (identical(_audioController, audio)) _audioController = null;
-            _audioError = error;
-          });
-        }
+        if (mounted) setState(() => _audioError = error);
       }
     }
   }
 
   Future<void> _stopVideo() async {
-    final controller = _videoController;
-    if (controller == null) return;
+    final session = _session;
+    if (session == null || _videoController == null) return;
     await _clipboardSync?.stop();
-    final audio = _audioController;
-    if (audio != null) await audio.stop();
-    await _session.stop();
-    await controller.stop();
-    controller.dispose();
-    audio?.dispose();
+    await session.stop();
     if (mounted) {
       setState(() {
         _videoController = null;
@@ -1012,17 +986,25 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
     if (target == _audioPlaybackTarget || _startingVideo) return;
     final wasRunning = _videoController != null;
     if (wasRunning) await _stopVideo();
-    await _reconnectSubscription?.cancel();
-    _session.dispose();
+    final previous = _session;
+    if (previous != null) {
+      previous.removeListener(_handleSessionChanged);
+      await _scrcpy.removeSession(previous.id);
+    }
     if (!mounted) return;
     setState(() {
       _audioPlaybackTarget = target;
-      _session = _createSession();
+      _session = null;
       _error = null;
     });
-    _bindReconnects();
     try {
-      await _session.prepare();
+      final replacement = await _createSession();
+      replacement.addListener(_handleSessionChanged);
+      if (!mounted) {
+        await _scrcpy.removeSession(replacement.id);
+        return;
+      }
+      setState(() => _session = replacement);
       if (wasRunning) await _startVideo();
     } catch (error) {
       if (mounted) setState(() => _error = error);
@@ -1030,23 +1012,22 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   }
 
   Future<void> _sendAndroidKey(int keyCode) async {
-    final input = _inputController;
-    if (input == null) return;
+    final session = _session;
+    if (session == null || !session.isControllable) return;
     try {
-      await input.sendKey(keyCode: keyCode);
-      await input.sendKey(keyCode: keyCode, down: false);
+      await session.key(keyCode);
     } catch (error) {
       if (mounted) setState(() => _error = error);
     }
   }
 
   Future<void> _resizeVirtualDisplay(int width, int height) async {
-    final input = _inputController;
-    if (input == null) return;
+    final session = _session;
+    if (session == null || !session.isControllable) return;
     final alignedWidth = width.clamp(2, 0xffff) & ~1;
     final alignedHeight = height.clamp(2, 0xffff) & ~1;
     try {
-      await input.resizeDisplay(width: alignedWidth, height: alignedHeight);
+      await session.resizeDisplay(width: alignedWidth, height: alignedHeight);
       if (mounted) {
         setState(() {
           _virtualDisplayWidth = alignedWidth;
@@ -1066,11 +1047,11 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   }
 
   Future<void> _sendText() async {
-    final input = _inputController;
+    final session = _session;
     final text = _textInputController.text;
-    if (input == null || text.isEmpty) return;
+    if (session == null || !session.isControllable || text.isEmpty) return;
     try {
-      await input.sendText(text);
+      await session.sendText(text);
       _textInputController.clear();
     } catch (error) {
       if (mounted) setState(() => _error = error);
@@ -1078,11 +1059,13 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   }
 
   Future<void> _pinch({required bool zoomIn}) async {
-    final input = _inputController;
-    if (input == null) return;
+    final session = _session;
+    if (session == null || !session.isControllable) return;
     try {
-      await ScrcpyGestureSimulator(input)
-          .pinch(startSpan: zoomIn ? 0.18 : 0.5, endSpan: zoomIn ? 0.5 : 0.18);
+      await session.pinch(
+        startSpan: zoomIn ? 0.18 : 0.5,
+        endSpan: zoomIn ? 0.5 : 0.18,
+      );
     } catch (error) {
       if (mounted) setState(() => _error = error);
     }
@@ -1122,14 +1105,12 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
   @override
   void dispose() {
     _statusMonitorGeneration++;
-    unawaited(_reconnectSubscription?.cancel());
     unawaited(_statusSubscription?.cancel());
     unawaited(_statusMonitor?.close());
     unawaited(_clipboardSync?.stop());
-    _audioController?.dispose();
     _textInputController.dispose();
-    _videoController?.dispose();
-    _session.dispose();
+    _session?.removeListener(_handleSessionChanged);
+    unawaited(_scrcpy.close().whenComplete(_scrcpy.dispose));
     super.dispose();
   }
 
@@ -1142,6 +1123,25 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
             : widget.device.model ?? '设备详情',
       ),
       actions: <Widget>[
+        IconButton(
+          tooltip: '截取当前画面',
+          onPressed: _session == null
+              ? null
+              : () => unawaited(
+                  captureSessionScreenshot(
+                    context,
+                    _session!,
+                    name: widget.device.redactedSerial,
+                  ),
+                ),
+          icon: const Icon(Icons.screenshot_monitor),
+        ),
+        if (_session != null)
+          SessionRecordingButton(
+            key: ValueKey('record-${_session!.id}'),
+            session: _session!,
+            name: widget.device.redactedSerial,
+          ),
         IconButton(
           tooltip: '虚拟屏工作台',
           onPressed: () => Navigator.of(context).push<void>(
@@ -1192,26 +1192,12 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
             height: 420,
             child: ColoredBox(
               color: const Color(0xff101218),
-              child: _videoController == null
+              child: _session == null || _videoController == null
                   ? const Center(child: Text('点击下方按钮启动真机画面'))
-                  : _inputController == null
-                  ? ScrcpyVideoView(controller: _videoController!)
-                  : ValueListenableBuilder<ScrcpyVideoState>(
-                      valueListenable: _videoController!,
-                      builder: (context, video, _) => ScrcpyInputLayer(
-                        controller: _inputController!,
-                        videoSize: video.width != null && video.height != null
-                            ? Size(
-                                video.width!.toDouble(),
-                                video.height!.toDouble(),
-                              )
-                            : null,
-                        child: ScrcpyVideoView(
-                          controller: _videoController!,
-                          placeholder: const Center(
-                            child: CircularProgressIndicator(),
-                          ),
-                        ),
+                  : ScrcpyView(
+                      session: _session!,
+                      placeholder: const Center(
+                        child: CircularProgressIndicator(),
                       ),
                     ),
             ),
@@ -1600,20 +1586,21 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
             ),
           ],
           const SizedBox(height: 12),
-          ValueListenableBuilder<ScrcpySessionState>(
-            valueListenable: _session.state,
-            builder: (context, state, _) => Card(
-              child: ListTile(
-                leading: const Icon(Icons.video_settings),
-                title: Text('会话状态：${state.name}'),
-                subtitle: Text(
-                  _videoController == null
-                      ? '${_displaySourceLabel(widget.displaySource)} · 视频未启动'
-                      : '${_displaySourceLabel(widget.displaySource)} · scrcpy 4.1 · Native Texture',
+          if (_session case final session?)
+            ValueListenableBuilder<ScrcpySessionState>(
+              valueListenable: session.state,
+              builder: (context, state, _) => Card(
+                child: ListTile(
+                  leading: const Icon(Icons.video_settings),
+                  title: Text('会话状态：${state.name}'),
+                  subtitle: Text(
+                    _videoController == null
+                        ? '${_displaySourceLabel(widget.displaySource)} · 视频未启动'
+                        : '${_displaySourceLabel(widget.displaySource)} · scrcpy 4.1 · Native Texture',
+                  ),
                 ),
               ),
             ),
-          ),
           if (_connectionInfo case final info?) ...<Widget>[
             const SizedBox(height: 12),
             Card(

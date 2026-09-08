@@ -15,6 +15,7 @@ final class ScrcpyControlMessageSerializer {
   static const int getClipboardType = 8;
   static const int setClipboardType = 9;
   static const int startApplicationType = 16;
+  static const int resetVideoType = 17;
   static const int resizeDisplayType = 21;
   static const int maxClipboardTextLength = (1 << 18) - 14;
 
@@ -90,6 +91,8 @@ final class ScrcpyControlMessageSerializer {
     result.setRange(2, result.length, payload);
     return result;
   }
+
+  static Uint8List resetVideo() => Uint8List.fromList(<int>[resetVideoType]);
 
   static Uint8List resizeDisplay({required int width, required int height}) {
     if (width <= 0 || width > 0xffff) {

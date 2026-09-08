@@ -122,6 +122,39 @@ void main() {
     },
   );
 
+  test('captures the latest native RGBA frame as PNG', () async {
+    const channel = MethodChannel('scrcpy_flutter/video');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          return switch (call.method) {
+            'create' => 7,
+            'captureFrame' => <String, Object>{
+              'width': 1,
+              'height': 1,
+              'pixels': Uint8List.fromList(<int>[255, 0, 0, 255]),
+            },
+            'dispose' || 'decode' => null,
+            'videoStats' => <String, Object>{'frames': 1},
+            _ => throw MissingPluginException(call.method),
+          };
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+    final connection = _FakeVideoConnection();
+    final controller = createNativeScrcpyVideoController(connection);
+    await controller.start();
+
+    final screenshot = await controller.captureFrame();
+
+    expect(screenshot.width, 1);
+    expect(screenshot.height, 1);
+    expect(screenshot.pngBytes.take(8), <int>[137, 80, 78, 71, 13, 10, 26, 10]);
+    await controller.stop();
+    controller.dispose();
+  });
+
   test('closes the connection when native texture disposal fails', () async {
     const channel = MethodChannel('scrcpy_flutter/video');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

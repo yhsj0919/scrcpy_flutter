@@ -4,6 +4,7 @@ import 'package:adb_client/adb_client.dart';
 import 'package:flutter/material.dart';
 import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
+import 'screenshot_helper.dart';
 import 'virtual_display_defaults.dart';
 
 class VirtualDisplayWorkspacePage extends StatefulWidget {
@@ -23,6 +24,7 @@ class VirtualDisplayWorkspacePage extends StatefulWidget {
 
 class _VirtualDisplayWorkspacePageState
     extends State<VirtualDisplayWorkspacePage> {
+  late final ScrcpyManager _scrcpy;
   final ScrcpyAudioFocusManager _audioFocus = ScrcpyAudioFocusManager();
   final List<_VirtualScreenDefinition> _screens = <_VirtualScreenDefinition>[];
   List<AdbApplication> _applications = const <AdbApplication>[];
@@ -34,12 +36,14 @@ class _VirtualDisplayWorkspacePageState
   @override
   void dispose() {
     _audioFocus.dispose();
+    unawaited(_scrcpy.close().whenComplete(_scrcpy.dispose));
     super.dispose();
   }
 
   @override
   void initState() {
     super.initState();
+    _scrcpy = ScrcpyManager.fromClient(widget.client);
     unawaited(_loadApplications());
   }
 
@@ -157,7 +161,7 @@ class _VirtualDisplayWorkspacePageState
                               width: tileWidth,
                               child: _VirtualDisplayTile(
                                 key: ValueKey<int>(screen.id),
-                                client: widget.client,
+                                manager: _scrcpy,
                                 device: widget.device,
                                 definition: screen,
                                 applications: _applications,
@@ -361,7 +365,7 @@ class _CreateVirtualScreenDialogState
 
 class _VirtualDisplayTile extends StatefulWidget {
   const _VirtualDisplayTile({
-    required this.client,
+    required this.manager,
     required this.device,
     required this.definition,
     required this.applications,
@@ -370,7 +374,7 @@ class _VirtualDisplayTile extends StatefulWidget {
     super.key,
   });
 
-  final ScrcpyClient client;
+  final ScrcpyManager manager;
   final AdbDevice device;
   final _VirtualScreenDefinition definition;
   final List<AdbApplication> applications;
@@ -382,16 +386,13 @@ class _VirtualDisplayTile extends StatefulWidget {
 }
 
 class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
-  late final ScrcpyRawSession _session;
-  StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
-  Future<void> _connectionChange = Future<void>.value();
+  ScrcpySession? _session;
   ScrcpyVideoController? _video;
   ScrcpyInputController? _input;
   ScrcpyAdaptiveDisplayController? _adaptiveDisplay;
   ScrcpyAudioController? _audio;
   Object? _audioError;
   Object? _error;
-  bool _disposing = false;
   late int _width = widget.definition.width;
   late int _height = widget.definition.height;
   int? _videoWidth;
@@ -408,39 +409,6 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
   void initState() {
     super.initState();
     widget.audioFocus.addListener(_handleAudioFocusChanged);
-    _session = widget.client.createSession(
-      ScrcpySessionConfiguration(
-        deviceSerial: widget.device.serial,
-        video: ScrcpyVideoOptions(maxSize: _width > _height ? _width : _height),
-        audioEnabled: widget.definition.audioEnabled,
-        audio: const ScrcpyAudioOptions(
-          codec: ScrcpyAudioCodec.opus,
-          source: ScrcpyAudioSource.playback,
-          duplicateOnDevice: false,
-        ),
-        displaySource: ScrcpyDisplaySource.virtual(
-          width: _width,
-          height: _height,
-          dpi: widget.definition.dpi,
-          systemDecorations: widget.definition.systemDecorations,
-          closePolicy: widget.definition.moveContentToMain
-              ? ScrcpyVirtualDisplayClosePolicy.moveContentToMainDisplay
-              : ScrcpyVirtualDisplayClosePolicy.destroyContent,
-          keepActive: true,
-          flexDisplay: true,
-          launchApplication: ScrcpyApplicationLaunch(_application.packageName),
-        ),
-        reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
-      ),
-    );
-    _reconnectSubscription = _session.reconnectedConnections.listen(
-      (connection) {
-        unawaited(_queueConnection(connection, isReconnect: true));
-      },
-      onError: (Object error) {
-        if (mounted) setState(() => _error = error);
-      },
-    );
     unawaited(_start());
   }
 
@@ -476,148 +444,103 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
 
   Future<void> _start() async {
     try {
-      final connection = await _session.start();
-      await _queueConnection(connection);
+      final session = await widget.manager.createSession(
+        id: 'workspace-${widget.definition.id}',
+        deviceSerial: widget.device.serial,
+        video: ScrcpyVideoOptions(maxSize: _width > _height ? _width : _height),
+        audioEnabled: widget.definition.audioEnabled,
+        audio: const ScrcpyAudioOptions(
+          codec: ScrcpyAudioCodec.opus,
+          source: ScrcpyAudioSource.playback,
+          duplicateOnDevice: false,
+          initiallyMuted: true,
+        ),
+        display: ScrcpyDisplay.virtual(
+          width: _width,
+          height: _height,
+          dpi: widget.definition.dpi,
+          systemDecorations: widget.definition.systemDecorations,
+          closePolicy: widget.definition.moveContentToMain
+              ? ScrcpyVirtualDisplayClosePolicy.moveContentToMainDisplay
+              : ScrcpyVirtualDisplayClosePolicy.destroyContent,
+          application: _application.packageName,
+        ),
+        reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
+      );
+      if (!mounted) {
+        await widget.manager.removeSession(session.id);
+        return;
+      }
+      _session = session;
+      session.addListener(_handleSessionChanged);
+      await _syncSessionResources();
     } catch (error) {
       if (mounted) setState(() => _error = error);
     }
   }
 
-  Future<void> _queueConnection(
-    ScrcpyVideoConnection connection, {
-    bool isReconnect = false,
-  }) {
-    final operation = _connectionChange.catchError((Object _) {}).then((
-      _,
-    ) async {
-      if (_disposing) {
-        await connection.close();
-        return;
-      }
-      await _attachConnection(connection, isReconnect: isReconnect);
-    });
-    _connectionChange = operation;
-    return operation;
-  }
+  void _handleSessionChanged() => unawaited(_syncSessionResources());
 
-  Future<void> _attachConnection(
-    ScrcpyVideoConnection connection, {
-    bool isReconnect = false,
-  }) async {
-    await _releaseControllers();
-    if (mounted && isReconnect) {
-      setState(() {
-        _videoWidth = null;
-        _videoHeight = null;
-      });
+  Future<void> _syncSessionResources() async {
+    final session = _session;
+    if (session == null || !mounted) return;
+    final video = session.video;
+    final audio = session.audio;
+    final input = session.input;
+    final videoChanged = !identical(_video, video);
+    final audioChanged = !identical(_audio, audio);
+    final inputChanged = !identical(_input, input);
+    if (!videoChanged && !audioChanged && !inputChanged) {
+      if (mounted) setState(() {});
+      return;
     }
-    ScrcpyVideoController? video;
-    ScrcpyAudioController? audio;
-    try {
-      video = createNativeScrcpyVideoController(connection);
-      await video.start();
-      if (!mounted) {
-        video.dispose();
-        await connection.close();
-        return;
-      }
-      setState(() {
-        _video = video;
-        _input = connection.input;
-        _error = null;
-        _audioError = null;
-        if (isReconnect) _reconnectCount++;
-        final input = connection.input;
-        if (input != null) {
-          _adaptiveDisplay = ScrcpyAdaptiveDisplayController(
-            input: input,
-            maxSize: _width > _height ? _width : _height,
-            onResized: (size) {
-              if (mounted) {
-                setState(() {
-                  _width = size.width.round();
-                  _height = size.height.round();
-                });
-              }
-            },
-            onError: (error, _) {
-              if (mounted) setState(() => _error = error);
-            },
-          );
-        }
-      });
-      video.addListener(_handleVideoState);
-      _handleVideoState();
-      if (widget.definition.audioEnabled && connection.audio != null) {
-        audio = createNativeScrcpyAudioController(connection.audio!);
-        await audio.setMuted(true);
-        await audio.start();
+    _adaptiveDisplay?.dispose();
+    _adaptiveDisplay = null;
+    if (videoChanged) {
+      _video?.removeListener(_handleVideoState);
+      video?.addListener(_handleVideoState);
+    }
+    if (audioChanged) {
+      _audio?.removeListener(_handleAudioState);
+      await widget.audioFocus.unregister(_audioFocusId);
+      audio?.addListener(_handleAudioState);
+      if (audio != null) {
         await widget.audioFocus.register(
           id: _audioFocusId,
           controller: audio,
           requestFocus: widget.audioFocus.focusedId == null,
         );
-        if (!mounted) {
-          await widget.audioFocus.unregister(_audioFocusId);
-          await audio.stop();
-          audio.dispose();
-          return;
-        }
-        audio.addListener(_handleAudioState);
-        setState(() => _audio = audio);
-      } else if (widget.definition.audioEnabled && mounted) {
-        setState(() {
-          _audioError = StateError('scrcpy server 未提供音频流');
-        });
       }
-    } catch (error) {
-      if (!identical(_video, video)) {
-        try {
-          await video?.stop();
-        } catch (_) {}
-        video?.dispose();
-      }
-      if (!identical(_audio, audio)) {
-        try {
-          await audio?.stop();
-        } catch (_) {}
-        audio?.dispose();
-      }
-      if (mounted) {
-        setState(() {
-          if (_video == null) {
-            _error = error;
-          } else {
-            _audioError = error;
+    }
+    if (_video != null && video != null && videoChanged) _reconnectCount++;
+    if (input != null) {
+      _adaptiveDisplay = ScrcpyAdaptiveDisplayController(
+        input: input,
+        maxSize: _width > _height ? _width : _height,
+        onResized: (size) {
+          if (mounted) {
+            setState(() {
+              _width = size.width.round();
+              _height = size.height.round();
+            });
           }
-        });
-      }
+        },
+        onError: (error, _) {
+          if (mounted) setState(() => _error = error);
+        },
+      );
     }
-  }
-
-  Future<void> _releaseControllers() async {
-    _adaptiveDisplay?.dispose();
-    _adaptiveDisplay = null;
-    final video = _video;
-    final audio = _audio;
-    _video = null;
-    _audio = null;
-    _input = null;
-    video?.removeListener(_handleVideoState);
-    audio?.removeListener(_handleAudioState);
-    await widget.audioFocus.unregister(_audioFocusId);
-    if (audio != null) {
-      try {
-        await audio.stop();
-      } catch (_) {}
-      audio.dispose();
-    }
-    if (video != null) {
-      try {
-        await video.stop();
-      } catch (_) {}
-      video.dispose();
-    }
+    if (!mounted) return;
+    setState(() {
+      _video = video;
+      _audio = audio;
+      _input = input;
+      _error = null;
+      _audioError = widget.definition.audioEnabled && audio == null
+          ? StateError('scrcpy server 未提供音频流')
+          : null;
+    });
+    _handleVideoState();
   }
 
   void _handleVideoState() {
@@ -633,10 +556,10 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
   }
 
   Future<void> _rotate() async {
-    final input = _input;
-    if (input == null) return;
+    final session = _session;
+    if (session == null || !session.isControllable) return;
     try {
-      await input.resizeDisplay(width: _height, height: _width);
+      await session.resizeDisplay(width: _height, height: _width);
       if (mounted) {
         setState(() {
           final width = _width;
@@ -655,11 +578,17 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
       builder: (_) =>
           _ResizeVirtualDisplayDialog(width: _width, height: _height),
     );
-    if (!mounted || size == null || _input == null) return;
+    final session = _session;
+    if (!mounted ||
+        size == null ||
+        session == null ||
+        !session.isControllable) {
+      return;
+    }
     final width = size.width.round() & ~1;
     final height = size.height.round() & ~1;
     try {
-      await _input!.resizeDisplay(width: width, height: height);
+      await session.resizeDisplay(width: width, height: height);
       if (mounted) {
         setState(() {
           _width = width;
@@ -673,9 +602,7 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
 
   Future<void> _switchApplication(AdbApplication application) async {
     try {
-      await _input?.startApplication(
-        ScrcpyApplicationLaunch(application.packageName),
-      );
+      await _session?.startApplication(application.packageName);
       if (mounted) setState(() => _application = application);
     } catch (error) {
       if (mounted) setState(() => _error = error);
@@ -684,15 +611,16 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
 
   @override
   void dispose() {
-    _disposing = true;
     widget.audioFocus.removeListener(_handleAudioFocusChanged);
-    unawaited(_reconnectSubscription?.cancel());
-    final cleanup = _connectionChange
-        .catchError((Object _) {})
-        .then((_) => _releaseControllers());
-    _connectionChange = cleanup;
-    unawaited(cleanup);
-    _session.dispose();
+    _adaptiveDisplay?.dispose();
+    _video?.removeListener(_handleVideoState);
+    _audio?.removeListener(_handleAudioState);
+    unawaited(widget.audioFocus.unregister(_audioFocusId));
+    final session = _session;
+    if (session != null) {
+      session.removeListener(_handleSessionChanged);
+      unawaited(widget.manager.removeSession(session.id));
+    }
     super.dispose();
   }
 
@@ -716,6 +644,26 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
         Wrap(
           alignment: WrapAlignment.end,
           children: <Widget>[
+            IconButton(
+              tooltip: '截取当前画面',
+              onPressed: _session == null
+                  ? null
+                  : () => unawaited(
+                      captureSessionScreenshot(
+                        context,
+                        _session!,
+                        name:
+                            '${widget.device.redactedSerial}_virtual_${widget.definition.id}',
+                      ),
+                    ),
+              icon: const Icon(Icons.screenshot_monitor),
+            ),
+            if (_session != null)
+              SessionRecordingButton(
+                key: ValueKey('record-${_session!.id}'),
+                session: _session!,
+                name: 'virtual-${widget.definition.id}',
+              ),
             IconButton(
               tooltip: _audio == null
                   ? (!widget.definition.audioEnabled
@@ -803,28 +751,9 @@ class _VirtualDisplayTileState extends State<_VirtualDisplayTile> {
                   color: const Color(0xff101218),
                   child: _error != null
                       ? Center(child: Text('$_error'))
-                      : _video == null
+                      : _session == null || _video == null
                       ? const Center(child: CircularProgressIndicator())
-                      : ValueListenableBuilder<ScrcpyVideoState>(
-                          valueListenable: _video!,
-                          builder: (context, state, _) {
-                            final view = ScrcpyVideoView(controller: _video!);
-                            final input = _input;
-                            if (input == null ||
-                                state.width == null ||
-                                state.height == null) {
-                              return view;
-                            }
-                            return ScrcpyInputLayer(
-                              controller: input,
-                              videoSize: Size(
-                                state.width!.toDouble(),
-                                state.height!.toDouble(),
-                              ),
-                              child: view,
-                            );
-                          },
-                        ),
+                      : ScrcpyView(session: _session!),
                 );
               },
             ),

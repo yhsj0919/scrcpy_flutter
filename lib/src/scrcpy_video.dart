@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import 'scrcpy_capture.dart';
+
 enum ScrcpyVideoStatus { idle, buffering, ready, ended, error }
 
 final class ScrcpyVideoState {
@@ -49,6 +51,17 @@ abstract interface class ScrcpyVideoController
   Future<void> start();
 
   Future<void> stop();
+
+  /// Captures the latest decoded frame without pausing the video stream.
+  Future<ScrcpyScreenshot> captureFrame();
+
+  bool get isRecording;
+
+  /// Starts lossless pass-through recording of the encoded video to MP4.
+  Future<void> startRecording(String path);
+
+  /// Finalizes the MP4 and returns the number of recorded video frames.
+  Future<int> stopRecording();
 
   void dispose();
 }

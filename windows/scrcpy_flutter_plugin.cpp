@@ -13,6 +13,7 @@
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
+#include <mfreadwrite.h>
 #include <mftransform.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -93,6 +94,27 @@ bool GetBool(const flutter::EncodableMap& map, const char* key) {
   if (!value) throw std::invalid_argument(std::string("Invalid bool ") + key);
   return *value;
 }
+
+std::string GetString(const flutter::EncodableMap& map, const char* key) {
+  const auto* value = std::get_if<std::string>(&Get(map, key));
+  if (!value) throw std::invalid_argument(std::string("Invalid string ") + key);
+  return *value;
+}
+
+std::wstring Utf8ToWide(const std::string& value) {
+  if (value.empty()) return {};
+  if (value.size() > static_cast<size_t>(INT_MAX)) {
+    throw std::invalid_argument("UTF-8 path is too long");
+  }
+  const int input_size = static_cast<int>(value.size());
+  const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                       value.data(), input_size, nullptr, 0);
+  if (size <= 0) throw std::invalid_argument("Invalid UTF-8 path");
+  std::wstring result(size, L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size,
+                      result.data(), size);
+  return result;
+}
 }  // namespace
 
 class NativeVideoTexture {
@@ -121,6 +143,7 @@ class NativeVideoTexture {
   }
 
   ~NativeVideoTexture() {
+    try { StopRecording(); } catch (...) {}
     if (decoder_) decoder_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
     StopConversion();
     MFShutdown();
@@ -141,6 +164,59 @@ class NativeVideoTexture {
   int64_t need_more_count() const { return need_more_count_; }
   int64_t frame_fingerprint() const { return frame_fingerprint_; }
   int64_t last_frame_ticks() const { return last_frame_ticks_; }
+
+  flutter::EncodableMap CaptureFrame() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (frame_count_ == 0) {
+      throw std::runtime_error("No decoded video frame is available");
+    }
+    flutter::EncodableMap frame;
+    frame[flutter::EncodableValue("width")] =
+        flutter::EncodableValue(static_cast<int32_t>(width_));
+    frame[flutter::EncodableValue("height")] =
+        flutter::EncodableValue(static_cast<int32_t>(height_));
+    frame[flutter::EncodableValue("pixels")] =
+        flutter::EncodableValue(pixels_);
+    return frame;
+  }
+
+  void StartRecording(const std::string& path) {
+    if (recorder_) throw std::runtime_error("Video recording is already active");
+    if (sequence_header_.empty()) throw std::runtime_error("H264 sequence header is not available");
+    ComPtr<IMFSinkWriter> writer;
+    const std::wstring wide_path = Utf8ToWide(path);
+    Check(MFCreateSinkWriterFromURL(wide_path.c_str(), nullptr, nullptr, &writer), "Create MP4 sink writer");
+    ComPtr<IMFMediaType> type;
+    Check(MFCreateMediaType(&type), "Create recording media type");
+    Check(type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video), "Recording major type");
+    Check(type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264), "Recording subtype");
+    type->SetUINT32(MF_MT_AVG_BITRATE, 8000000);
+    type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    Check(MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, width_, height_), "Recording frame size");
+    Check(MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, 60, 1), "Recording frame rate");
+    Check(MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1), "Recording pixel aspect ratio");
+    DWORD stream = 0;
+    Check(writer->AddStream(type.Get(), &stream), "Add recording stream");
+    Check(type->SetBlob(MF_MT_MPEG_SEQUENCE_HEADER, sequence_header_.data(), static_cast<UINT32>(sequence_header_.size())), "Recording sequence header");
+    Check(writer->SetInputMediaType(stream, type.Get(), nullptr), "Set recording input type");
+    Check(writer->BeginWriting(), "Begin MP4 recording");
+    recorder_ = writer;
+    recording_stream_ = stream;
+    recording_first_pts_us_ = -1;
+    recording_frames_ = 0;
+    recording_waiting_for_key_frame_ = true;
+  }
+
+  int64_t StopRecording() {
+    if (!recorder_) return 0;
+    ComPtr<IMFSinkWriter> writer = recorder_;
+    recorder_.Reset();
+    const int64_t frames = recording_frames_;
+    Check(writer->Finalize(), "Finalize MP4 recording");
+    recording_first_pts_us_ = -1;
+    recording_frames_ = 0;
+    return frames;
+  }
 
   void Decode(const std::vector<uint8_t>& bytes, int64_t pts_us,
               bool config, bool key_frame) {
@@ -171,6 +247,19 @@ class NativeVideoTexture {
     }
     if (key_frame) sample->SetUINT32(MFSampleExtension_CleanPoint, TRUE);
     if (config) sample->SetUINT32(MFSampleExtension_Discontinuity, TRUE);
+
+    if (recorder_ && (!recording_waiting_for_key_frame_ || key_frame)) {
+      recording_waiting_for_key_frame_ = false;
+      ComPtr<IMFSample> recording_sample;
+      Check(MFCreateSample(&recording_sample), "Create recording sample");
+      Check(recording_sample->AddBuffer(buffer.Get()), "Add recording buffer");
+      if (recording_first_pts_us_ < 0) recording_first_pts_us_ = pts_us;
+      Check(recording_sample->SetSampleTime((pts_us - recording_first_pts_us_) * 10), "Set recording timestamp");
+      recording_sample->SetSampleDuration(166667);
+      if (key_frame) recording_sample->SetUINT32(MFSampleExtension_CleanPoint, TRUE);
+      Check(recorder_->WriteSample(recording_stream_, recording_sample.Get()), "Write recording sample");
+      ++recording_frames_;
+    }
 
     HRESULT hr = decoder_->ProcessInput(0, sample.Get(), 0);
     if (hr == MF_E_NOTACCEPTING) {
@@ -227,6 +316,7 @@ class NativeVideoTexture {
 
   void ConfigureInput(const std::vector<uint8_t>* sequence_header) {
     if (!sequence_header) return;
+    sequence_header_ = *sequence_header;
     if (configured_) {
       decoder_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
     }
@@ -443,6 +533,12 @@ class NativeVideoTexture {
   uint32_t pending_stride_ = 0;
   bool conversion_stopping_ = false;
   std::thread conversion_thread_;
+  std::vector<uint8_t> sequence_header_;
+  ComPtr<IMFSinkWriter> recorder_;
+  DWORD recording_stream_ = 0;
+  int64_t recording_first_pts_us_ = -1;
+  int64_t recording_frames_ = 0;
+  bool recording_waiting_for_key_frame_ = false;
 };
 
 class NativeAudioPlayer {
@@ -756,6 +852,20 @@ void ScrcpyFlutterPlugin::HandleVideoMethodCall(
       stats[flutter::EncodableValue("lastFrameTicks")] =
           flutter::EncodableValue(video->second->last_frame_ticks());
       result->Success(flutter::EncodableValue(stats));
+    } else if (call.method_name() == "captureFrame") {
+      auto video = videos_.find(GetInt(args, "textureId"));
+      if (video == videos_.end()) throw std::invalid_argument("Unknown texture");
+      result->Success(
+          flutter::EncodableValue(video->second->CaptureFrame()));
+    } else if (call.method_name() == "startRecording") {
+      auto video = videos_.find(GetInt(args, "textureId"));
+      if (video == videos_.end()) throw std::invalid_argument("Unknown texture");
+      video->second->StartRecording(GetString(args, "path"));
+      result->Success();
+    } else if (call.method_name() == "stopRecording") {
+      auto video = videos_.find(GetInt(args, "textureId"));
+      if (video == videos_.end()) throw std::invalid_argument("Unknown texture");
+      result->Success(flutter::EncodableValue(video->second->StopRecording()));
     } else if (call.method_name() == "clockMetrics") {
       LARGE_INTEGER ticks{}, frequency{};
       QueryPerformanceCounter(&ticks);

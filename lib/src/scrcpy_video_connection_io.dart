@@ -721,6 +721,7 @@ final class _IoScrcpyInputController
     implements
         ScrcpyInputController,
         ScrcpyScreenPowerInputController,
+        ScrcpyVideoResetInputController,
         ScrcpyInputTransportStatus {
   _IoScrcpyInputController(this._socket, {required this.onTransportClosed}) {
     _subscription = _socket.chunks.listen(
@@ -852,6 +853,10 @@ final class _IoScrcpyInputController
           height: height,
         ),
       );
+
+  @override
+  Future<void> resetVideo() =>
+      _send(ScrcpyControlMessageSerializer.resetVideo());
 
   @override
   Stream<String> get clipboardChanges => _clipboardController.stream;

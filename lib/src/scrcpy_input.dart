@@ -147,6 +147,11 @@ abstract interface class ScrcpyScreenPowerInputController {
   Future<void> sendBackOrScreenOn({bool down = true});
 }
 
+/// Requests a fresh video configuration and key frame from scrcpy-server.
+abstract interface class ScrcpyVideoResetInputController {
+  Future<void> resetVideo();
+}
+
 /// Sends synthetic multi-pointer gestures through a scrcpy control channel.
 ///
 /// Coordinates and spans are normalized to the current video size, so the

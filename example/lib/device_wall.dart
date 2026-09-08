@@ -7,8 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
+import 'screenshot_helper.dart';
 import 'virtual_display_defaults.dart';
-import 'device_wall_session_manager.dart';
 
 class DeviceWallPage extends StatefulWidget {
   const DeviceWallPage({
@@ -25,15 +25,11 @@ class DeviceWallPage extends StatefulWidget {
 }
 
 class _DeviceWallPageState extends State<DeviceWallPage> {
-  late final DeviceWallSessionManager _sessions;
+  late final ScrcpyManager _sessions;
   final ScrcpyAudioFocusManager _audioFocus = ScrcpyAudioFocusManager();
   late final List<_DeviceWallWindow> _windows;
-  final GlobalKey _viewportKey = GlobalKey();
-  final Map<String, GlobalKey> _cellKeys = <String, GlobalKey>{};
-  final Set<String> _visibleWindowIds = <String>{};
-  bool _visibilityUpdateScheduled = false;
-  _DeviceWallQualityPolicy _qualityPolicy = _DeviceWallQualityPolicy.defaults;
-  int _qualityRevision = 0;
+  _DeviceWallQualityProfile _defaultQualityProfile =
+      _DeviceWallQualityProfile.defaults;
   int _nextVirtualId = 1;
   String? _expandedId;
   final Set<String> _selectedDeviceSerials = <String>{};
@@ -55,11 +51,12 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
       <String, ScrcpySessionMetricsSnapshot>{};
   final ValueNotifier<int> _metricsRevision = ValueNotifier<int>(0);
   bool _disposed = false;
+  String? _focusedId;
 
   @override
   void initState() {
     super.initState();
-    _sessions = DeviceWallSessionManager(client: widget.client);
+    _sessions = ScrcpyManager.fromClient(widget.client);
     _processMetrics = ScrcpyProcessMetricsCollector();
     _processMetrics.addListener(_notifyMetricsChanged);
     _windows = <_DeviceWallWindow>[
@@ -71,7 +68,6 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
           displaySource: const ScrcpyDisplaySource.main(),
         ),
     ];
-    _visibleWindowIds.addAll(_windows.map((window) => window.id));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _windows.isNotEmpty) {
         _focus(_windows.first.id);
@@ -88,12 +84,12 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
     _processMetrics.dispose();
     _metricsRevision.dispose();
     _audioFocus.dispose();
-    _sessions.dispose();
+    unawaited(_sessions.close().whenComplete(_sessions.dispose));
     super.dispose();
   }
 
   void _focus(String id) {
-    _sessions.focus(id);
+    _focusedId = id;
     final window = _windows.where((item) => item.id == id).firstOrNull;
     if (window != null) {
       unawaited(_audioFocus.tryRequestFocus(window.audioFocusId));
@@ -127,52 +123,18 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
     ),
   );
 
-  void _scheduleVisibilityUpdate() {
-    if (_visibilityUpdateScheduled) return;
-    _visibilityUpdateScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _visibilityUpdateScheduled = false;
-      if (!mounted) return;
-      final viewport = _viewportKey.currentContext?.findRenderObject();
-      if (viewport is! RenderBox || !viewport.hasSize) return;
-      final viewportOrigin = viewport.localToGlobal(Offset.zero);
-      final viewportRect = viewportOrigin & viewport.size;
-      final visible = <String>{};
-      for (final window in _windows) {
-        final renderObject = _cellKeys[window.id]?.currentContext
-            ?.findRenderObject();
-        if (renderObject is! RenderBox || !renderObject.hasSize) continue;
-        final origin = renderObject.localToGlobal(Offset.zero);
-        final rect = origin & renderObject.size;
-        if (!rect.isEmpty && rect.overlaps(viewportRect)) {
-          visible.add(window.id);
-        }
-      }
-      if (setEquals(visible, _visibleWindowIds)) return;
-      setState(() {
-        _visibleWindowIds
-          ..clear()
-          ..addAll(visible);
-      });
-    });
-  }
-
-  _DeviceWallQualityTier _qualityTier(String id) {
-    if (_sessions.focusedId == id) return _DeviceWallQualityTier.focused;
-    if (_visibleWindowIds.contains(id)) return _DeviceWallQualityTier.visible;
-    return _DeviceWallQualityTier.offscreen;
-  }
-
-  Future<void> _configureQualityPolicy() async {
-    final policy = await showDialog<_DeviceWallQualityPolicy>(
+  Future<void> _configureDefaultQuality() async {
+    final profile = await showDialog<_DeviceWallQualityProfile>(
       context: context,
-      builder: (_) => _QualityPolicyDialog(initialValue: _qualityPolicy),
+      builder: (_) => _QualityProfileDialog(
+        title: '新窗口默认画质',
+        initialValue: _defaultQualityProfile,
+      ),
     );
-    if (!mounted || policy == null || policy == _qualityPolicy) return;
-    setState(() {
-      _qualityPolicy = policy;
-      _qualityRevision++;
-    });
+    if (!mounted || profile == null) return;
+    setState(() => _defaultQualityProfile = profile);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('默认画质已更新，只影响之后创建的窗口')));
   }
 
   List<String> get _selectedSerials =>
@@ -401,9 +363,7 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
         windows: _windows,
         videoSizes: _windowVideoSizes,
         initialSourceId:
-            _touchBroadcastSourceId ??
-            _sessions.focusedId ??
-            _windows.firstOrNull?.id,
+            _touchBroadcastSourceId ?? _focusedId ?? _windows.firstOrNull?.id,
         initialTargetIds: _touchBroadcastTargetIds,
       ),
     );
@@ -515,9 +475,7 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
           ),
         ),
       );
-      _visibleWindowIds.add(id);
     });
-    _scheduleVisibilityUpdate();
   }
 
   Future<VirtualDisplayDefaults> _loadDisplayDefaults(AdbDevice device) async {
@@ -540,8 +498,6 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
     }
     setState(() {
       _windows.remove(window);
-      _visibleWindowIds.remove(window.id);
-      _cellKeys.remove(window.id);
       _windowInputs.remove(window.id);
       _windowVideoSizes.remove(window.id);
       _sessionMetrics.remove(window.id);
@@ -651,8 +607,8 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
             icon: const Icon(Icons.fact_check_outlined),
           ),
         IconButton(
-          tooltip: '画质调度设置',
-          onPressed: _configureQualityPolicy,
+          tooltip: '新窗口默认画质',
+          onPressed: _configureDefaultQuality,
           icon: const Icon(Icons.tune),
         ),
         if (_expandedId != null)
@@ -670,7 +626,6 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
     ),
     body: LayoutBuilder(
       builder: (context, constraints) {
-        _scheduleVisibilityUpdate();
         const spacing = 12.0;
         final columns = switch (constraints.maxWidth) {
           >= 1800 => 4,
@@ -680,93 +635,73 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
         };
         final tileWidth =
             (constraints.maxWidth - 32 - spacing * (columns - 1)) / columns;
-        return SizedBox(
-          key: _viewportKey,
-          child: NotificationListener<ScrollNotification>(
-            onNotification: (_) {
-              _scheduleVisibilityUpdate();
-              return false;
-            },
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Wrap(
-                spacing: spacing,
-                runSpacing: spacing,
-                children: <Widget>[
-                  for (final window in _windows)
-                    Visibility(
-                      visible: _expandedId == null || _expandedId == window.id,
-                      maintainState: true,
-                      maintainAnimation: true,
-                      child: SizedBox(
-                        key: _cellKeys.putIfAbsent(window.id, GlobalKey.new),
-                        width: _expandedId == null
-                            ? tileWidth
-                            : constraints.maxWidth - 32,
-                        child: KeyedSubtree(
-                          key: ValueKey('device-wall-cell-${window.id}'),
-                          child: _DeviceWallTile(
-                            key: ValueKey(window.id),
-                            manager: _sessions,
-                            audioFocus: _audioFocus,
-                            window: window,
-                            focused: _sessions.focusedId == window.id,
-                            expanded: _expandedId == window.id,
-                            qualityTier: _qualityTier(window.id),
-                            qualityProfile: _qualityPolicy.profileFor(
-                              _qualityTier(window.id),
-                            ),
-                            qualityRevision: _qualityRevision,
-                            selectionMode: _selectionMode,
-                            selected: _selectedDeviceSerials.contains(
-                              window.device.serial,
-                            ),
-                            onSelectionChanged: (selected) => setState(() {
-                              if (selected) {
-                                _selectedDeviceSerials.add(
-                                  window.device.serial,
-                                );
-                              } else {
-                                _selectedDeviceSerials.remove(
-                                  window.device.serial,
-                                );
-                              }
-                            }),
-                            onInputChanged: (controller, videoSize) =>
-                                _updateWindowInput(
-                                  window.id,
-                                  controller,
-                                  videoSize,
-                                ),
-                            onPointer: (event) =>
-                                _broadcastPointer(window.id, event),
-                            onInputFailure: (error) =>
-                                _handleInputFailure(window.id, error),
-                            onMetrics: (snapshot) =>
-                                _updateSessionMetrics(window.id, snapshot),
-                            onFocus: () => _focus(window.id),
-                            onToggleExpanded: () {
-                              final id = window.id;
-                              _sessions.focus(id);
-                              unawaited(
-                                _audioFocus.tryRequestFocus(
-                                  window.audioFocusId,
-                                ),
-                              );
-                              setState(() {
-                                _expandedId = _expandedId == id ? null : id;
-                              });
-                            },
-                            onClose: window.isVirtual
-                                ? () => _removeWindow(window)
-                                : null,
-                          ),
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Wrap(
+            spacing: spacing,
+            runSpacing: spacing,
+            children: <Widget>[
+              for (final window in _windows)
+                Visibility(
+                  visible: _expandedId == null || _expandedId == window.id,
+                  maintainState: true,
+                  maintainAnimation: true,
+                  child: SizedBox(
+                    width: _expandedId == null
+                        ? tileWidth
+                        : constraints.maxWidth - 32,
+                    child: KeyedSubtree(
+                      key: ValueKey('device-wall-cell-${window.id}'),
+                      child: _DeviceWallTile(
+                        key: ValueKey(window.id),
+                        manager: _sessions,
+                        audioFocus: _audioFocus,
+                        window: window,
+                        focused: _focusedId == window.id,
+                        expanded: _expandedId == window.id,
+                        initialQuality: _defaultQualityProfile,
+                        selectionMode: _selectionMode,
+                        selected: _selectedDeviceSerials.contains(
+                          window.device.serial,
                         ),
+                        onSelectionChanged: (selected) => setState(() {
+                          if (selected) {
+                            _selectedDeviceSerials.add(window.device.serial);
+                          } else {
+                            _selectedDeviceSerials.remove(window.device.serial);
+                          }
+                        }),
+                        onInputChanged: (controller, videoSize) =>
+                            _updateWindowInput(
+                              window.id,
+                              controller,
+                              videoSize,
+                            ),
+                        onPointer: (event) =>
+                            _broadcastPointer(window.id, event),
+                        onInputFailure: (error) =>
+                            _handleInputFailure(window.id, error),
+                        onMetrics: (snapshot) =>
+                            _updateSessionMetrics(window.id, snapshot),
+                        onFocus: () => _focus(window.id),
+                        onToggleExpanded: () {
+                          final id = window.id;
+                          _focusedId = id;
+                          unawaited(
+                            _audioFocus.tryRequestFocus(window.audioFocusId),
+                          );
+                          setState(() {
+                            _expandedId = _expandedId == id ? null : id;
+                          });
+                        },
+                        onClose: window.isVirtual
+                            ? () => _removeWindow(window)
+                            : null,
                       ),
                     ),
-                ],
-              ),
-            ),
+                  ),
+                ),
+            ],
           ),
         );
       },
@@ -800,16 +735,6 @@ enum _DeviceWallBatchAction {
   stopApplication,
 }
 
-enum _DeviceWallQualityTier {
-  focused('聚焦'),
-  visible('可见'),
-  offscreen('离屏');
-
-  const _DeviceWallQualityTier(this.label);
-
-  final String label;
-}
-
 final class _DeviceWallQualityProfile {
   const _DeviceWallQualityProfile({
     required this.maxSize,
@@ -820,6 +745,12 @@ final class _DeviceWallQualityProfile {
   final int maxSize;
   final int maxFps;
   final double bitRateMbps;
+
+  static const defaults = _DeviceWallQualityProfile(
+    maxSize: 1280,
+    maxFps: 30,
+    bitRateMbps: 4,
+  );
 
   int get bitRate => (bitRateMbps * 1000000).round();
 
@@ -834,53 +765,6 @@ final class _DeviceWallQualityProfile {
   int get hashCode => Object.hash(maxSize, maxFps, bitRateMbps);
 }
 
-final class _DeviceWallQualityPolicy {
-  const _DeviceWallQualityPolicy({
-    required this.focused,
-    required this.visible,
-    required this.offscreen,
-  });
-
-  static const defaults = _DeviceWallQualityPolicy(
-    focused: _DeviceWallQualityProfile(
-      maxSize: 1280,
-      maxFps: 30,
-      bitRateMbps: 4,
-    ),
-    visible: _DeviceWallQualityProfile(
-      maxSize: 960,
-      maxFps: 20,
-      bitRateMbps: 2.5,
-    ),
-    offscreen: _DeviceWallQualityProfile(
-      maxSize: 640,
-      maxFps: 10,
-      bitRateMbps: 1.5,
-    ),
-  );
-
-  final _DeviceWallQualityProfile focused;
-  final _DeviceWallQualityProfile visible;
-  final _DeviceWallQualityProfile offscreen;
-
-  _DeviceWallQualityProfile profileFor(_DeviceWallQualityTier tier) =>
-      switch (tier) {
-        _DeviceWallQualityTier.focused => focused,
-        _DeviceWallQualityTier.visible => visible,
-        _DeviceWallQualityTier.offscreen => offscreen,
-      };
-
-  @override
-  bool operator ==(Object other) =>
-      other is _DeviceWallQualityPolicy &&
-      focused == other.focused &&
-      visible == other.visible &&
-      offscreen == other.offscreen;
-
-  @override
-  int get hashCode => Object.hash(focused, visible, offscreen);
-}
-
 class _DeviceWallTile extends StatefulWidget {
   const _DeviceWallTile({
     required this.manager,
@@ -888,9 +772,7 @@ class _DeviceWallTile extends StatefulWidget {
     required this.window,
     required this.focused,
     required this.expanded,
-    required this.qualityTier,
-    required this.qualityProfile,
-    required this.qualityRevision,
+    required this.initialQuality,
     required this.selectionMode,
     required this.selected,
     required this.onSelectionChanged,
@@ -904,14 +786,12 @@ class _DeviceWallTile extends StatefulWidget {
     super.key,
   });
 
-  final DeviceWallSessionManager manager;
+  final ScrcpyManager manager;
   final ScrcpyAudioFocusManager audioFocus;
   final _DeviceWallWindow window;
   final bool focused;
   final bool expanded;
-  final _DeviceWallQualityTier qualityTier;
-  final _DeviceWallQualityProfile qualityProfile;
-  final int qualityRevision;
+  final _DeviceWallQualityProfile initialQuality;
   final bool selectionMode;
   final bool selected;
   final ValueChanged<bool> onSelectionChanged;
@@ -929,266 +809,182 @@ class _DeviceWallTile extends StatefulWidget {
 }
 
 class _DeviceWallTileState extends State<_DeviceWallTile> {
-  late DeviceWallManagedSession _session;
-  StreamSubscription<ScrcpyVideoConnection>? _reconnectSubscription;
+  ScrcpySession? _session;
   Future<void> _connectionChange = Future<void>.value();
-  Timer? _qualityTimer;
-  late _DeviceWallQualityTier _appliedQualityTier = widget.qualityTier;
-  late _DeviceWallQualityProfile _appliedQualityProfile = widget.qualityProfile;
+  late _DeviceWallQualityProfile _appliedQuality = widget.initialQuality;
   final ValueNotifier<ScrcpySessionState> _metricsSessionState =
       ValueNotifier<ScrcpySessionState>(ScrcpySessionState.idle);
   late final ScrcpySessionMetricsCollector _metrics;
   ScrcpyVideoController? _video;
   ScrcpyAudioController? _audio;
   ScrcpyInputController? _input;
+  ScrcpyInputController? _sourceInput;
   Object? _error;
   Object? _audioError;
   int _reconnectCount = 0;
   bool _disposing = false;
-  bool _disconnectCleanupQueued = false;
   bool _retrying = false;
 
   @override
   void initState() {
     super.initState();
-    _session = _createManagedSession(_appliedQualityProfile);
-    _metricsSessionState.value = _session.state.value;
     _metrics = ScrcpySessionMetricsCollector(
       sessionState: _metricsSessionState,
-      videoCodec: _session.configuration.video.codec.serverName,
+      videoCodec: ScrcpyVideoCodec.h264.serverName,
     )..addListener(_reportMetrics);
     widget.audioFocus.addListener(_handleChanged);
-    _session.state.addListener(_handleChanged);
-    _bindReconnects();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_start());
     });
   }
 
-  DeviceWallManagedSession _createManagedSession(
+  Future<ScrcpySession> _createSession(
     _DeviceWallQualityProfile qualityProfile,
-  ) => widget.manager.create(
-    ScrcpySessionConfiguration(
-      deviceSerial: widget.window.device.serial,
-      displaySource: widget.window.displaySource,
-      video: ScrcpyVideoOptions(
-        maxSize: qualityProfile.maxSize,
-        maxFps: qualityProfile.maxFps,
-        bitRate: qualityProfile.bitRate,
-      ),
-      // Android playback capture belongs to the physical device, not to a
-      // display. Its main-screen session owns the single shared audio stream.
-      audioEnabled: !widget.window.isVirtual,
-      audio: ScrcpyAudioOptions(
-        codec: ScrcpyAudioCodec.opus,
-        source: widget.window.isVirtual
-            ? ScrcpyAudioSource.playback
-            : ScrcpyAudioSource.automatic,
-        duplicateOnDevice: false,
-      ),
-      reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
+  ) => widget.manager.createSession(
+    deviceSerial: widget.window.device.serial,
+    display: widget.window.displaySource,
+    video: ScrcpyVideoOptions(
+      maxSize: qualityProfile.maxSize,
+      maxFps: qualityProfile.maxFps,
+      bitRate: qualityProfile.bitRate,
     ),
+    // Android playback capture belongs to the physical device, not to a
+    // display. Its main-screen session owns the single shared audio stream.
+    audioEnabled: !widget.window.isVirtual,
+    audio: ScrcpyAudioOptions(
+      codec: ScrcpyAudioCodec.opus,
+      source: widget.window.isVirtual
+          ? ScrcpyAudioSource.playback
+          : ScrcpyAudioSource.automatic,
+      duplicateOnDevice: false,
+      initiallyMuted: true,
+    ),
+    reconnectPolicy: const ScrcpyReconnectPolicy(maxAttempts: 5),
     id: widget.window.id,
   );
 
-  void _bindReconnects() {
-    _reconnectSubscription = _session.reconnectedConnections.listen(
-      (connection) =>
-          unawaited(_queueConnection(connection, isReconnect: true)),
-      onError: (Object error) {
-        if (mounted) setState(() => _error = error);
-      },
-    );
-  }
-
-  @override
-  void didUpdateWidget(covariant _DeviceWallTile oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // Focus and visibility change frequently while the wall scrolls. Keep the
-    // stream alive; only explicitly applying settings may rebuild a session.
-    if (oldWidget.qualityRevision != widget.qualityRevision) {
-      _qualityTimer?.cancel();
-      _qualityTimer = Timer(const Duration(milliseconds: 600), () {
-        if (mounted) {
-          unawaited(
-            _applyQualityTier(widget.qualityTier, widget.qualityProfile),
-          );
-        }
-      });
-    }
-  }
-
   void _handleChanged() {
-    final state = _session.state.value;
+    if (_disposing) return;
+    final session = _session;
+    if (session == null) return;
+    final state = session.state.value;
     if (_metricsSessionState.value != state) {
       _metricsSessionState.value = state;
     }
-    if ((state == ScrcpySessionState.disconnected ||
-            state == ScrcpySessionState.error) &&
-        !_disconnectCleanupQueued) {
-      _disconnectCleanupQueued = true;
-      _connectionChange = _connectionChange
-          .catchError((Object _) {})
-          .then((_) => _releaseControllers());
-    }
+    _connectionChange = _connectionChange
+        .catchError((Object _) {})
+        .then((_) => _syncSessionResources());
     if (mounted) setState(() {});
   }
 
   Future<void> _start() async {
     try {
-      final connection = await widget.manager.start(widget.window.id);
-      await _queueConnection(connection);
+      final session = await _createSession(_appliedQuality);
+      if (_disposing) {
+        await widget.manager.removeSession(session.id);
+        return;
+      }
+      _session = session;
+      _metricsSessionState.value = session.state.value;
+      session.addListener(_handleChanged);
+      await _syncSessionResources();
     } catch (error) {
       if (mounted) setState(() => _error = error);
     }
   }
 
-  Future<void> _queueConnection(
-    ScrcpyVideoConnection connection, {
-    bool isReconnect = false,
-  }) {
-    final operation = _connectionChange.catchError((Object _) {}).then((
-      _,
-    ) async {
-      if (_disposing) {
-        await connection.close();
-        return;
-      }
-      await _attachConnection(connection, isReconnect: isReconnect);
-    });
-    _connectionChange = operation;
-    return operation;
-  }
+  Future<void> _syncSessionResources() async {
+    final session = _session;
+    if (_disposing || session == null) return;
+    final video = session.video;
+    final audio = session.audio;
+    final sourceInput = session.input;
+    final videoChanged = !identical(_video, video);
+    final audioChanged = !identical(_audio, audio);
+    final inputChanged = !identical(_sourceInput, sourceInput);
+    if (!videoChanged && !audioChanged && !inputChanged) return;
 
-  Future<void> _attachConnection(
-    ScrcpyVideoConnection connection, {
-    required bool isReconnect,
-  }) async {
-    await _releaseControllers();
-    ScrcpyVideoController? video;
-    ScrcpyAudioController? audio;
-    try {
-      video = createNativeScrcpyVideoController(connection);
-      await video.start();
-      if (!mounted) {
-        video.dispose();
-        await connection.close();
-        return;
+    if (videoChanged) _video?.removeListener(_handleChanged);
+    if (audioChanged) {
+      _audio?.removeListener(_handleChanged);
+      if (!widget.window.isVirtual) {
+        await widget.audioFocus.unregister(widget.window.audioFocusId);
       }
-      video.addListener(_handleChanged);
-      setState(() {
-        _disconnectCleanupQueued = false;
-        _video = video;
-        final connectionInput = connection.input;
-        _input = connectionInput == null
-            ? null
-            : _TouchBroadcastInputController(
-                delegate: connectionInput,
-                onPointer: widget.onPointer,
-                onFailure: widget.onInputFailure,
-              );
-        _error = null;
-        _audioError = null;
-        if (isReconnect) _reconnectCount++;
-      });
-      _metrics.attach(
-        video: _video,
-        audio: _audio,
-        reconnectCount: _reconnectCount,
-      );
-      widget.onInputChanged(_input, stateSize(video.value));
+    }
+    if (_video != null && video != null && videoChanged) _reconnectCount++;
 
-      final stream = connection.audio;
-      if (widget.window.isVirtual) return;
-      if (stream == null) {
-        if (mounted) setState(() => _audioError = '设备未提供音频流');
-        return;
-      }
-      audio = createNativeScrcpyAudioController(stream);
-      await audio.setMuted(true);
-      await audio.start();
+    final input = sourceInput == null
+        ? null
+        : _TouchBroadcastInputController(
+            delegate: sourceInput,
+            onPointer: widget.onPointer,
+            onFailure: widget.onInputFailure,
+          );
+    if (videoChanged) video?.addListener(_handleChanged);
+    if (audioChanged) audio?.addListener(_handleChanged);
+    if (audio != null && !widget.window.isVirtual) {
       await widget.audioFocus.register(
         id: widget.window.audioFocusId,
         controller: audio,
-        requestFocus:
-            widget.manager.focusedId == widget.window.id ||
-            widget.audioFocus.focusedId == null,
+        requestFocus: widget.focused || widget.audioFocus.focusedId == null,
       );
-      if (!mounted) {
-        await widget.audioFocus.unregister(widget.window.audioFocusId);
-        await audio.stop();
-        audio.dispose();
-        return;
-      }
-      audio.addListener(_handleChanged);
-      setState(() => _audio = audio);
-      _metrics.attach(
-        video: _video,
-        audio: _audio,
-        reconnectCount: _reconnectCount,
-      );
-    } catch (error) {
-      if (!identical(_video, video)) {
-        try {
-          await video?.stop();
-        } catch (_) {}
-        video?.dispose();
-      }
-      if (!identical(_audio, audio)) {
-        try {
-          await audio?.stop();
-        } catch (_) {}
-        audio?.dispose();
-      }
-      if (mounted) {
-        setState(() {
-          if (_video == null) {
-            _error = error;
-          } else {
-            _audioError = error;
-          }
-        });
-      }
     }
-  }
-
-  Future<void> _applyQualityTier(
-    _DeviceWallQualityTier qualityTier,
-    _DeviceWallQualityProfile qualityProfile,
-  ) async {
-    if (_disposing ||
-        (qualityTier == _appliedQualityTier &&
-            qualityProfile == _appliedQualityProfile)) {
+    if (_disposing) {
+      video?.removeListener(_handleChanged);
+      audio?.removeListener(_handleChanged);
+      if (!widget.window.isVirtual) {
+        await widget.audioFocus.unregister(widget.window.audioFocusId);
+      }
       return;
     }
+    _video = video;
+    _audio = audio;
+    _sourceInput = sourceInput;
+    _input = input;
+    _error = null;
+    _audioError = !widget.window.isVirtual && audio == null ? '设备未提供音频流' : null;
+    _metrics.attach(
+      video: video,
+      audio: audio,
+      reconnectCount: _reconnectCount,
+    );
+    widget.onInputChanged(input, video == null ? null : stateSize(video.value));
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _configureQuality() async {
+    final profile = await showDialog<_DeviceWallQualityProfile>(
+      context: context,
+      builder: (_) => _QualityProfileDialog(
+        title: '${widget.window.title} · 画质',
+        initialValue: _appliedQuality,
+      ),
+    );
+    if (!mounted || profile == null || profile == _appliedQuality) return;
+    await _applyQuality(profile);
+  }
+
+  Future<void> _applyQuality(_DeviceWallQualityProfile qualityProfile) async {
+    if (_disposing || qualityProfile == _appliedQuality) return;
     final operation = _connectionChange.catchError((Object _) {}).then((
       _,
     ) async {
-      if (_disposing ||
-          (qualityTier == _appliedQualityTier &&
-              qualityProfile == _appliedQualityProfile)) {
-        return;
-      }
+      if (_disposing || qualityProfile == _appliedQuality) return;
       await _releaseControllers();
-      await _reconnectSubscription?.cancel();
-      _reconnectSubscription = null;
-      _session.state.removeListener(_handleChanged);
-      await widget.manager.remove(widget.window.id);
+      final previous = _session;
+      previous?.removeListener(_handleChanged);
+      if (previous != null) await widget.manager.removeSession(previous.id);
       if (_disposing) return;
 
-      _session = _createManagedSession(qualityProfile);
-      _appliedQualityTier = qualityTier;
-      _appliedQualityProfile = qualityProfile;
-      _disconnectCleanupQueued = false;
-      _session.state.addListener(_handleChanged);
-      _bindReconnects();
-      if (widget.focused) widget.manager.focus(widget.window.id);
-      final connection = await widget.manager.start(widget.window.id);
+      final replacement = await _createSession(qualityProfile);
       if (_disposing) {
-        await connection.close();
+        await widget.manager.removeSession(replacement.id);
         return;
       }
-      await _attachConnection(connection, isReconnect: false);
+      _session = replacement;
+      _appliedQuality = qualityProfile;
+      replacement.addListener(_handleChanged);
+      await _syncSessionResources();
     });
     _connectionChange = operation;
     try {
@@ -1209,14 +1005,12 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
       _,
     ) async {
       await _releaseControllers();
-      await widget.manager.stop(widget.window.id);
+      final session = _session;
+      if (session == null) return;
+      await session.stop();
       if (_disposing) return;
-      final connection = await widget.manager.start(widget.window.id);
-      if (_disposing) {
-        await connection.close();
-        return;
-      }
-      await _attachConnection(connection, isReconnect: true);
+      await session.start();
+      await _syncSessionResources();
     });
     _connectionChange = operation;
     try {
@@ -1229,47 +1023,37 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
   }
 
   Future<void> _releaseControllers() async {
-    final video = _video;
-    final audio = _audio;
+    _video?.removeListener(_handleChanged);
+    _audio?.removeListener(_handleChanged);
     _video = null;
     _audio = null;
     _input = null;
+    _sourceInput = null;
     widget.onInputChanged(null, null);
     _metrics.attach(reconnectCount: _reconnectCount);
-    video?.removeListener(_handleChanged);
-    audio?.removeListener(_handleChanged);
     if (!widget.window.isVirtual) {
       await widget.audioFocus.unregister(widget.window.audioFocusId);
-    }
-    if (audio != null) {
-      try {
-        await audio.stop();
-      } catch (_) {}
-      audio.dispose();
-    }
-    if (video != null) {
-      try {
-        await video.stop();
-      } catch (_) {}
-      video.dispose();
     }
   }
 
   @override
   void dispose() {
     _disposing = true;
-    _qualityTimer?.cancel();
     _metrics.removeListener(_reportMetrics);
     _metrics.dispose();
     _metricsSessionState.dispose();
     widget.onMetrics(null);
     widget.audioFocus.removeListener(_handleChanged);
-    _session.state.removeListener(_handleChanged);
-    unawaited(_reconnectSubscription?.cancel());
+    final session = _session;
+    session?.removeListener(_handleChanged);
     final cleanup = _connectionChange
         .catchError((Object _) {})
         .then((_) => _releaseControllers())
-        .whenComplete(() => widget.manager.remove(widget.window.id));
+        .whenComplete(
+          () => session == null
+              ? Future<void>.value()
+              : widget.manager.removeSession(session.id),
+        );
     _connectionChange = cleanup;
     unawaited(cleanup);
     super.dispose();
@@ -1310,16 +1094,38 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
               '${widget.window.device.redactedSerial}'
               '${widget.window.isVirtual ? ' · 虚拟屏' : ''} · $_statusLabel'
               '${_reconnectCount == 0 ? '' : ' · 重连 $_reconnectCount 次'}'
-              ' · ${widget.qualityTier.label}'
-              '${widget.qualityTier == _appliedQualityTier ? '' : '(保持当前流)'}'
-              ' · 流≤${_appliedQualityProfile.maxSize}px/'
-              '${_appliedQualityProfile.maxFps}fps/'
-              '${_formatMbps(_appliedQualityProfile.bitRateMbps)}Mbps'
+              ' · 流≤${_appliedQuality.maxSize}px/'
+              '${_appliedQuality.maxFps}fps/'
+              '${_formatMbps(_appliedQuality.bitRateMbps)}Mbps'
               '$_audioStatusSuffix',
             ),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
+                IconButton(
+                  tooltip: '截取当前画面',
+                  onPressed: _session == null
+                      ? null
+                      : () => unawaited(
+                          captureSessionScreenshot(
+                            context,
+                            _session!,
+                            name: widget.window.id,
+                          ),
+                        ),
+                  icon: const Icon(Icons.screenshot_monitor),
+                ),
+                if (_session != null)
+                  SessionRecordingButton(
+                    key: ValueKey('record-${_session!.id}'),
+                    session: _session!,
+                    name: widget.window.id,
+                  ),
+                IconButton(
+                  tooltip: '设置此窗口画质（将重新连接一次）',
+                  onPressed: _retrying ? null : _configureQuality,
+                  icon: const Icon(Icons.tune),
+                ),
                 IconButton(
                   tooltip: _audioError == null
                       ? _audioLabel
@@ -1403,24 +1209,10 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
     );
   }
 
-  Widget _buildVideo() => ValueListenableBuilder<ScrcpyVideoState>(
-    valueListenable: _video!,
-    builder: (context, state, _) {
-      final view = ScrcpyVideoView(
-        controller: _video!,
-        placeholder: const Center(child: CircularProgressIndicator()),
-      );
-      final input = _input;
-      if (input == null || state.width == null || state.height == null) {
-        return view;
-      }
-      widget.onInputChanged(input, stateSize(state));
-      return ScrcpyInputLayer(
-        controller: input,
-        videoSize: Size(state.width!.toDouble(), state.height!.toDouble()),
-        child: view,
-      );
-    },
+  Widget _buildVideo() => ScrcpyView(
+    session: _session!,
+    inputController: _input,
+    placeholder: const Center(child: CircularProgressIndicator()),
   );
 
   static Size? stateSize(ScrcpyVideoState state) {
@@ -1432,7 +1224,8 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
     return Size(width.toDouble(), height.toDouble());
   }
 
-  String get _statusLabel => switch (_session.state.value) {
+  String get _statusLabel => switch (_session?.state.value) {
+    null => '等待启动',
     ScrcpySessionState.idle => '等待启动',
     ScrcpySessionState.preparing => '准备中',
     ScrcpySessionState.ready => '已连接',
@@ -1494,13 +1287,17 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
   void _reportMetrics() => widget.onMetrics(_metrics.value);
 }
 
-class _QualityPolicyDialog extends StatefulWidget {
-  const _QualityPolicyDialog({required this.initialValue});
+class _QualityProfileDialog extends StatefulWidget {
+  const _QualityProfileDialog({
+    required this.title,
+    required this.initialValue,
+  });
 
-  final _DeviceWallQualityPolicy initialValue;
+  final String title;
+  final _DeviceWallQualityProfile initialValue;
 
   @override
-  State<_QualityPolicyDialog> createState() => _QualityPolicyDialogState();
+  State<_QualityProfileDialog> createState() => _QualityProfileDialogState();
 }
 
 final class _TouchBroadcastInputController
@@ -1708,101 +1505,54 @@ class _TouchBroadcastDialogState extends State<_TouchBroadcastDialog> {
   }
 }
 
-class _QualityPolicyDialogState extends State<_QualityPolicyDialog> {
-  late final Map<_DeviceWallQualityTier, TextEditingController>
-  _maxSizeControllers;
-  late final Map<_DeviceWallQualityTier, TextEditingController> _fpsControllers;
-  late final Map<_DeviceWallQualityTier, TextEditingController>
-  _bitRateControllers;
+class _QualityProfileDialogState extends State<_QualityProfileDialog> {
+  late final TextEditingController _maxSize = TextEditingController(
+    text: '${widget.initialValue.maxSize}',
+  );
+  late final TextEditingController _fps = TextEditingController(
+    text: '${widget.initialValue.maxFps}',
+  );
+  late final TextEditingController _bitRate = TextEditingController(
+    text: _formatNumber(widget.initialValue.bitRateMbps),
+  );
   String? _error;
 
   @override
-  void initState() {
-    super.initState();
-    _maxSizeControllers = _controllersFor(
-      widget.initialValue,
-      (profile) => '${profile.maxSize}',
-    );
-    _fpsControllers = _controllersFor(
-      widget.initialValue,
-      (profile) => '${profile.maxFps}',
-    );
-    _bitRateControllers = _controllersFor(
-      widget.initialValue,
-      (profile) => _formatNumber(profile.bitRateMbps),
-    );
-  }
-
-  Map<_DeviceWallQualityTier, TextEditingController> _controllersFor(
-    _DeviceWallQualityPolicy policy,
-    String Function(_DeviceWallQualityProfile profile) valueOf,
-  ) => {
-    for (final tier in _DeviceWallQualityTier.values)
-      tier: TextEditingController(text: valueOf(policy.profileFor(tier))),
-  };
-
-  @override
   void dispose() {
-    for (final controller in <TextEditingController>[
-      ..._maxSizeControllers.values,
-      ..._fpsControllers.values,
-      ..._bitRateControllers.values,
-    ]) {
-      controller.dispose();
-    }
+    _maxSize.dispose();
+    _fps.dispose();
+    _bitRate.dispose();
     super.dispose();
   }
 
   void _restoreDefaults() {
-    for (final tier in _DeviceWallQualityTier.values) {
-      final profile = _DeviceWallQualityPolicy.defaults.profileFor(tier);
-      _maxSizeControllers[tier]!.text = '${profile.maxSize}';
-      _fpsControllers[tier]!.text = '${profile.maxFps}';
-      _bitRateControllers[tier]!.text = _formatNumber(profile.bitRateMbps);
-    }
+    const profile = _DeviceWallQualityProfile.defaults;
+    _maxSize.text = '${profile.maxSize}';
+    _fps.text = '${profile.maxFps}';
+    _bitRate.text = _formatNumber(profile.bitRateMbps);
     setState(() => _error = null);
   }
 
   void _submit() {
-    final profiles = <_DeviceWallQualityTier, _DeviceWallQualityProfile>{};
-    for (final tier in _DeviceWallQualityTier.values) {
-      final maxSize = int.tryParse(_maxSizeControllers[tier]!.text.trim());
-      final maxFps = int.tryParse(_fpsControllers[tier]!.text.trim());
-      final bitRate = double.tryParse(_bitRateControllers[tier]!.text.trim());
-      if (maxSize == null || maxSize < 64 || maxSize > 16384) {
-        return _showError('${tier.label}档最大边长需在 64–16384 之间');
-      }
-      if (maxFps == null || maxFps < 1 || maxFps > 240) {
-        return _showError('${tier.label}档帧率需在 1–240 之间');
-      }
-      if (bitRate == null || bitRate < 0.1 || bitRate > 100) {
-        return _showError('${tier.label}档码率需在 0.1–100 Mbps 之间');
-      }
-      profiles[tier] = _DeviceWallQualityProfile(
-        maxSize: maxSize,
-        maxFps: maxFps,
-        bitRateMbps: bitRate,
-      );
+    final maxSize = int.tryParse(_maxSize.text.trim());
+    final maxFps = int.tryParse(_fps.text.trim());
+    final bitRate = double.tryParse(_bitRate.text.trim());
+    if (maxSize == null || maxSize < 64 || maxSize > 16384) {
+      return _showError('最大边长需在 64–16384 之间');
     }
-
-    final focused = profiles[_DeviceWallQualityTier.focused]!;
-    final visible = profiles[_DeviceWallQualityTier.visible]!;
-    final offscreen = profiles[_DeviceWallQualityTier.offscreen]!;
-    if (focused.maxSize < visible.maxSize ||
-        visible.maxSize < offscreen.maxSize ||
-        focused.maxFps < visible.maxFps ||
-        visible.maxFps < offscreen.maxFps ||
-        focused.bitRateMbps < visible.bitRateMbps ||
-        visible.bitRateMbps < offscreen.bitRateMbps) {
-      return _showError('聚焦档参数需不低于可见档，可见档需不低于离屏档');
+    if (maxFps == null || maxFps < 1 || maxFps > 240) {
+      return _showError('帧率需在 1–240 之间');
+    }
+    if (bitRate == null || bitRate < 0.1 || bitRate > 100) {
+      return _showError('码率需在 0.1–100 Mbps 之间');
     }
 
     Navigator.pop(
       context,
-      _DeviceWallQualityPolicy(
-        focused: focused,
-        visible: visible,
-        offscreen: offscreen,
+      _DeviceWallQualityProfile(
+        maxSize: maxSize,
+        maxFps: maxFps,
+        bitRateMbps: bitRate,
       ),
     );
   }
@@ -1811,52 +1561,44 @@ class _QualityPolicyDialogState extends State<_QualityPolicyDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('设备墙画质调度'),
+    title: Text(widget.title),
     content: SizedBox(
-      width: 620,
+      width: 560,
       child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            const Text(
-              '滚动、聚焦和离屏切换不会重连。点击“应用”后，现有窗口会按当时所在档位'
-              '重建一次视频会话；之后的自动状态变化保持当前视频流。',
-            ),
+            const Text('修改现有窗口会重新建立一次视频会话；聚焦、全屏和滚动不会改变画质。'),
             const SizedBox(height: 12),
-            for (final tier in _DeviceWallQualityTier.values) ...[
-              Text(tier.label, style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: 6),
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: _numberField(
-                      controller: _maxSizeControllers[tier]!,
-                      label: '最大边长',
-                      suffix: 'px',
-                    ),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: _numberField(
+                    controller: _maxSize,
+                    label: '最大边长',
+                    suffix: 'px',
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _numberField(
-                      controller: _fpsControllers[tier]!,
-                      label: '最大帧率',
-                      suffix: 'fps',
-                    ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _numberField(
+                    controller: _fps,
+                    label: '最大帧率',
+                    suffix: 'fps',
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _numberField(
-                      controller: _bitRateControllers[tier]!,
-                      label: '码率',
-                      suffix: 'Mbps',
-                      decimal: true,
-                    ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _numberField(
+                    controller: _bitRate,
+                    label: '码率',
+                    suffix: 'Mbps',
+                    decimal: true,
                   ),
-                ],
-              ),
-              const SizedBox(height: 14),
-            ],
+                ),
+              ],
+            ),
             if (_error != null)
               Text(
                 _error!,

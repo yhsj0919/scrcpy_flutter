@@ -142,12 +142,16 @@ final class ScrcpyAudioOptions {
     this.bitRate = 128000,
     this.source = ScrcpyAudioSource.automatic,
     this.duplicateOnDevice = false,
+    this.initiallyMuted = false,
+    this.initialVolume = 1,
   });
 
   final ScrcpyAudioCodec codec;
   final int bitRate;
   final ScrcpyAudioSource source;
   final bool duplicateOnDevice;
+  final bool initiallyMuted;
+  final double initialVolume;
 
   /// Resolves [ScrcpyAudioSource.automatic] for the target Android SDK.
   ///
@@ -170,6 +174,9 @@ final class ScrcpyAudioOptions {
       throw ArgumentError(
         'duplicateOnDevice requires ScrcpyAudioSource.playback',
       );
+    }
+    if (!initialVolume.isFinite || initialVolume < 0 || initialVolume > 1) {
+      throw RangeError.range(initialVolume, 0, 1, 'initialVolume');
     }
   }
 }
@@ -316,6 +323,8 @@ final class ScrcpyRawSession extends ChangeNotifier {
           bitRate: configuration.audio.bitRate,
         );
         try {
+          await audio.setVolume(configuration.audio.initialVolume);
+          await audio.setMuted(configuration.audio.initiallyMuted);
           await audio.start();
         } catch (_) {
           audio.dispose();
@@ -383,7 +392,26 @@ final class ScrcpyRawSession extends ChangeNotifier {
 
   Future<void> power() => _sendKeyClick(ScrcpyAndroidKeyCode.power);
 
+  Future<void> key(int keyCode) => _sendKeyClick(keyCode);
+
   Future<void> sendText(String text) => _requireInput().sendText(text);
+
+  Future<void> startApplication(
+    String packageName, {
+    bool forceStopBeforeStart = false,
+  }) => _requireInput().startApplication(
+    ScrcpyApplicationLaunch(
+      packageName,
+      forceStopBeforeStart: forceStopBeforeStart,
+    ),
+  );
+
+  Future<void> resizeDisplay({required int width, required int height}) =>
+      _requireInput().resizeDisplay(width: width, height: height);
+
+  Future<void> pinch({required double startSpan, required double endSpan}) =>
+      ScrcpyGestureSimulator(_requireInput())
+          .pinch(startSpan: startSpan, endSpan: endSpan);
 
   Future<void> _sendKeyClick(int keyCode) async {
     final controller = _requireInput();

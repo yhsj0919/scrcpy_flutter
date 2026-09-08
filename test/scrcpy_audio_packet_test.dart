@@ -109,6 +109,14 @@ void main() {
       ).validate(),
       returnsNormally,
     );
+    expect(
+      () => const ScrcpySessionConfiguration(
+        deviceSerial: 'device',
+        audioEnabled: true,
+        audio: ScrcpyAudioOptions(initialVolume: 1.1),
+      ).validate(),
+      throwsRangeError,
+    );
   });
 
   test('resolves automatic audio source by Android SDK', () {

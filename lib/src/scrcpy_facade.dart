@@ -5,7 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'scrcpy_client.dart';
+import 'scrcpy_capture.dart';
+import 'scrcpy_audio.dart';
 import 'scrcpy_display_source.dart';
+import 'scrcpy_error.dart';
 import 'scrcpy_input.dart';
 import 'scrcpy_session.dart';
 import 'scrcpy_video.dart';
@@ -68,16 +71,68 @@ final class ScrcpySession extends ChangeNotifier {
   bool get isConnected => _raw.isConnected;
   bool get isControllable => _raw.isControllable;
   bool get hasAudio => _raw.hasAudio;
+  bool get isRunning => _raw.video != null;
 
-  ScrcpyVideoController? get _video => _raw.video;
-  ScrcpyInputController? get _input => _raw.input;
+  /// Current video controller. Prefer [ScrcpyView] unless custom rendering or
+  /// diagnostics require direct observation.
+  ScrcpyVideoController? get video => _raw.video;
+
+  ScrcpyAudioController? get audio => _raw.audio;
+  ScrcpyInputController? get input => _raw.input;
+
+  ScrcpyVideoController? get _video => video;
+  ScrcpyInputController? get _input => input;
 
   Future<void> home() => _raw.home();
   Future<void> back() => _raw.back();
   Future<void> power() => _raw.power();
+  Future<void> key(int keyCode) => _raw.key(keyCode);
   Future<void> sendText(String text) => _raw.sendText(text);
   Future<void> setMuted(bool muted) => _raw.setMuted(muted);
   Future<void> setVolume(double volume) => _raw.setVolume(volume);
+  Future<void> startApplication(
+    String packageName, {
+    bool forceStopBeforeStart = false,
+  }) => _raw.startApplication(
+    packageName,
+    forceStopBeforeStart: forceStopBeforeStart,
+  );
+  Future<void> resizeDisplay({required int width, required int height}) =>
+      _raw.resizeDisplay(width: width, height: height);
+  Future<void> pinch({required double startSpan, required double endSpan}) =>
+      _raw.pinch(startSpan: startSpan, endSpan: endSpan);
+
+  /// Captures the currently displayed frame as PNG without reconnecting.
+  Future<ScrcpyScreenshot> captureFrame() {
+    final controller = video;
+    if (controller == null) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.captureFailure,
+        'This session has no active video stream',
+      );
+    }
+    return controller.captureFrame();
+  }
+
+  bool get isRecording => video?.isRecording ?? false;
+
+  Future<void> startRecording(String path) {
+    final controller = video;
+    if (controller == null) {
+      throw const ScrcpyException(
+        ScrcpyErrorCode.recordingFailure,
+        'This session has no active video stream',
+      );
+    }
+    return controller.startRecording(path);
+  }
+
+  Future<int> stopRecording() => video?.stopRecording() ?? Future<int>.value(0);
+
+  Future<ScrcpySession> start({AdbCancellationToken? cancellationToken}) =>
+      _open(cancellationToken: cancellationToken);
+
+  Future<void> stop() => _raw.stop();
 
   Future<ScrcpySession> _open({AdbCancellationToken? cancellationToken}) async {
     await _raw.open(cancellationToken: cancellationToken);
@@ -154,6 +209,7 @@ final class ScrcpyManager extends ChangeNotifier {
     ),
     String? id,
     AdbCancellationToken? cancellationToken,
+    bool start = true,
   }) async {
     _checkActive();
     final limit = maxSessions;
@@ -186,7 +242,9 @@ final class ScrcpyManager extends ChangeNotifier {
     session.addListener(listener);
     notifyListeners();
     try {
-      await session._open(cancellationToken: cancellationToken);
+      if (start) {
+        await session._open(cancellationToken: cancellationToken);
+      }
       return session;
     } catch (_) {
       await removeSession(resolvedId);
@@ -627,6 +685,7 @@ final class ScrcpyView extends StatelessWidget {
     this.placeholder,
     this.errorBuilder,
     this.controlGroup,
+    this.inputController,
     super.key,
   });
 
@@ -643,6 +702,10 @@ final class ScrcpyView extends StatelessWidget {
   /// When provided, input on this view controls every session in the group.
   /// The displayed [session] should normally be [ScrcpySessionGroup.primary].
   final ScrcpySessionGroup? controlGroup;
+
+  /// Optional input decorator for usage-side routing, logging or policies.
+  /// Video and lifecycle still come from [session].
+  final ScrcpyInputController? inputController;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -669,7 +732,8 @@ final class ScrcpyView extends StatelessWidget {
             alignment: alignment,
             placeholder: placeholder,
           );
-          final input = controlGroup?._input ?? session._input;
+          final input =
+              controlGroup?._input ?? inputController ?? session._input;
           if (!interactive || input == null) return view;
           return ScrcpyInputLayer(
             controller: input,
