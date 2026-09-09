@@ -16,6 +16,8 @@
 #include <mfreadwrite.h>
 #include <mftransform.h>
 #include <psapi.h>
+#include <pdh.h>
+#include <pdhmsg.h>
 #include <tlhelp32.h>
 #include <wrl/client.h>
 
@@ -701,6 +703,58 @@ class NativeAudioPlayer {
   std::atomic<int64_t> peak_sample_ = 0;
 };
 
+class ProcessGpuSampler {
+ public:
+  ProcessGpuSampler() {
+    if (PdhOpenQueryW(nullptr, 0, &query_) != ERROR_SUCCESS) return;
+    if (PdhAddEnglishCounterW(
+            query_, L"\\GPU Engine(*)\\Utilization Percentage", 0,
+            &counter_) != ERROR_SUCCESS) {
+      PdhCloseQuery(query_);
+      query_ = nullptr;
+      return;
+    }
+    PdhCollectQueryData(query_);
+  }
+
+  ~ProcessGpuSampler() {
+    if (query_) PdhCloseQuery(query_);
+  }
+
+  double Sample() {
+    if (!query_ || PdhCollectQueryData(query_) != ERROR_SUCCESS) return -1;
+    DWORD size = 0;
+    DWORD count = 0;
+    PDH_STATUS status = PdhGetFormattedCounterArrayW(
+        counter_, PDH_FMT_DOUBLE, &size, &count, nullptr);
+    if (status != PDH_MORE_DATA || size == 0) return -1;
+    std::vector<uint8_t> storage(size);
+    auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(storage.data());
+    if (PdhGetFormattedCounterArrayW(counter_, PDH_FMT_DOUBLE, &size, &count,
+                                     items) != ERROR_SUCCESS) {
+      return -1;
+    }
+    const std::wstring marker =
+        L"pid_" + std::to_wstring(GetCurrentProcessId()) + L"_";
+    double total = 0;
+    bool found = false;
+    for (DWORD index = 0; index < count; ++index) {
+      const std::wstring name = items[index].szName;
+      if (name.find(marker) == std::wstring::npos ||
+          items[index].FmtValue.CStatus != ERROR_SUCCESS) {
+        continue;
+      }
+      total += items[index].FmtValue.doubleValue;
+      found = true;
+    }
+    return found ? (std::min)(100.0, (std::max)(0.0, total)) : 0.0;
+  }
+
+ private:
+  PDH_HQUERY query_ = nullptr;
+  PDH_HCOUNTER counter_ = nullptr;
+};
+
 void ScrcpyFlutterPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
   auto video_channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -722,7 +776,8 @@ void ScrcpyFlutterPlugin::RegisterWithRegistrar(
 }
 
 ScrcpyFlutterPlugin::ScrcpyFlutterPlugin(flutter::PluginRegistrarWindows* registrar)
-    : texture_registrar_(registrar->texture_registrar()) {}
+    : texture_registrar_(registrar->texture_registrar()),
+      process_gpu_sampler_(std::make_unique<ProcessGpuSampler>()) {}
 
 ScrcpyFlutterPlugin::~ScrcpyFlutterPlugin() {
   audios_.clear();
@@ -902,6 +957,11 @@ void ScrcpyFlutterPlugin::HandleVideoMethodCall(
               GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)));
       metrics[flutter::EncodableValue("threadCount")] =
           flutter::EncodableValue(CurrentProcessThreadCount());
+      const double gpu = process_gpu_sampler_ ? process_gpu_sampler_->Sample() : -1;
+      if (gpu >= 0) {
+        metrics[flutter::EncodableValue("gpuUsagePercent")] =
+            flutter::EncodableValue(gpu);
+      }
       result->Success(flutter::EncodableValue(metrics));
     } else if (call.method_name() == "dispose") {
       int64_t id = GetInt(args, "textureId");

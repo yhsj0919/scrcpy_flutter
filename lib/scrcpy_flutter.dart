@@ -13,6 +13,7 @@ export 'src/scrcpy_display_source.dart'
 export 'src/scrcpy_error.dart';
 export 'src/scrcpy_facade.dart';
 export 'src/scrcpy_input.dart' show ScrcpyAndroidKeyCode, ScrcpyInputController;
+export 'src/scrcpy_metrics.dart';
 export 'src/scrcpy_session.dart'
     show
         ScrcpyAudioOptions,

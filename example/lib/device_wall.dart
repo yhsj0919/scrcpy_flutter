@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:adb_client/adb_client.dart';
 import 'package:flutter/foundation.dart';
@@ -49,6 +50,8 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
   late final ScrcpyProcessMetricsCollector _processMetrics;
   final Map<String, ScrcpySessionMetricsSnapshot> _sessionMetrics =
       <String, ScrcpySessionMetricsSnapshot>{};
+  final Map<String, List<ScrcpySessionMetricsSnapshot>> _sessionMetricHistory =
+      <String, List<ScrcpySessionMetricsSnapshot>>{};
   final ValueNotifier<int> _metricsRevision = ValueNotifier<int>(0);
   bool _disposed = false;
   String? _focusedId;
@@ -109,6 +112,14 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
       _sessionMetrics.remove(windowId);
     } else {
       _sessionMetrics[windowId] = snapshot;
+      final history = _sessionMetricHistory.putIfAbsent(
+        windowId,
+        () => <ScrcpySessionMetricsSnapshot>[],
+      );
+      if (history.isEmpty || history.last.observedAt != snapshot.observedAt) {
+        history.add(snapshot);
+        if (history.length > 300) history.removeAt(0);
+      }
     }
     _notifyMetricsChanged();
   }
@@ -119,6 +130,7 @@ class _DeviceWallPageState extends State<DeviceWallPage> {
       revision: _metricsRevision,
       windows: _windows,
       sessionMetrics: _sessionMetrics,
+      sessionMetricHistory: _sessionMetricHistory,
       processMetrics: _processMetrics,
     ),
   );
@@ -1639,12 +1651,14 @@ class _DeviceWallMetricsDialog extends StatelessWidget {
     required this.revision,
     required this.windows,
     required this.sessionMetrics,
+    required this.sessionMetricHistory,
     required this.processMetrics,
   });
 
   final ValueListenable<int> revision;
   final List<_DeviceWallWindow> windows;
   final Map<String, ScrcpySessionMetricsSnapshot> sessionMetrics;
+  final Map<String, List<ScrcpySessionMetricsSnapshot>> sessionMetricHistory;
   final ScrcpyProcessMetricsCollector processMetrics;
 
   @override
@@ -1743,6 +1757,11 @@ class _DeviceWallMetricsDialog extends StatelessWidget {
         icon: const Icon(Icons.copy),
         label: const Text('复制 JSON 快照'),
       ),
+      TextButton.icon(
+        onPressed: () => _saveReport(context),
+        icon: const Icon(Icons.save_alt),
+        label: const Text('导出诊断报告'),
+      ),
       FilledButton(
         onPressed: () => Navigator.pop(context),
         child: const Text('关闭'),
@@ -1813,6 +1832,48 @@ class _DeviceWallMetricsDialog extends StatelessWidget {
     if (context.mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('性能快照已复制为 JSON')));
+    }
+  }
+
+  ScrcpyDiagnosticsReport _report() => ScrcpyDiagnosticsReport(
+    generatedAt: DateTime.now(),
+    sessions: <String, List<ScrcpySessionMetricsSnapshot>>{
+      for (final window in windows)
+        window.id: List<ScrcpySessionMetricsSnapshot>.unmodifiable(
+          sessionMetricHistory[window.id] ?? const [],
+        ),
+    },
+    process: processMetrics.history,
+    metadata: <String, Object?>{
+      'platform': 'windows',
+      'windowCount': windows.length,
+      'windows': <String, Object?>{
+        for (final window in windows)
+          window.id: <String, Object?>{
+            'title': window.title,
+            'deviceSerial': window.device.redactedSerial,
+            'virtualDisplay': window.isVirtual,
+          },
+      },
+    },
+  );
+
+  Future<void> _saveReport(BuildContext context) async {
+    try {
+      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+      final path =
+          '${Directory.current.path}${Platform.pathSeparator}'
+          'diagnostics${Platform.pathSeparator}device-wall-$timestamp.json';
+      await _report().saveToFile(path);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('诊断报告已保存：$path')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('诊断报告导出失败：$error')));
+      }
     }
   }
 

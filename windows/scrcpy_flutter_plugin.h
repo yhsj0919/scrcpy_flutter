@@ -12,6 +12,7 @@ namespace scrcpy_flutter {
 
 class NativeVideoTexture;
 class NativeAudioPlayer;
+class ProcessGpuSampler;
 
 class ScrcpyFlutterPlugin : public flutter::Plugin {
  public:
@@ -38,6 +39,7 @@ class ScrcpyFlutterPlugin : public flutter::Plugin {
   std::unordered_map<int64_t, std::unique_ptr<NativeVideoTexture>> videos_;
   std::unordered_map<int64_t, std::unique_ptr<NativeAudioPlayer>> audios_;
   int64_t next_audio_id_ = 1;
+  std::unique_ptr<ProcessGpuSampler> process_gpu_sampler_;
 };
 
 }  // namespace scrcpy_flutter

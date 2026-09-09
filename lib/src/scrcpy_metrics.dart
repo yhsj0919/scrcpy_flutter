@@ -332,6 +332,7 @@ final class ScrcpyProcessMetricsCollector extends ChangeNotifier {
         workingSetBytes: values['workingSetBytes'] as int? ?? 0,
         privateBytes: values['privateBytes'] as int? ?? 0,
         threadCount: values['threadCount'] as int? ?? 0,
+        gpuUsagePercent: (values['gpuUsagePercent'] as num?)?.toDouble(),
       );
       _history.add(_value!);
       if (_history.length > historyLimit) _history.removeAt(0);
@@ -375,7 +376,10 @@ final class ScrcpyMetricsAggregate {
       streamingCount: values
           .where((item) => item.sessionState == ScrcpySessionState.streaming)
           .length,
-      totalFramesPerSecond: values.fold(0, (sum, item) => sum + item.framesPerSecond),
+      totalFramesPerSecond: values.fold(
+        0,
+        (sum, item) => sum + item.framesPerSecond,
+      ),
       totalVideoBitRate: values.fold(0, (sum, item) => sum + item.videoBitRate),
       totalAudioBitRate: values.fold(0, (sum, item) => sum + item.audioBitRate),
       totalErrors: values.fold(0, (sum, item) => sum + item.errorCount),

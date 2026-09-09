@@ -93,6 +93,77 @@ void main() {
     expect(snapshot.toJson()['estimatedLatencyMs'], isNull);
     expect(snapshot.toJson()['gpuUsagePercent'], isNull);
   });
+
+  test('keeps bounded session history and aggregates latest values', () {
+    var now = DateTime(2026);
+    final session = ValueNotifier<ScrcpySessionState>(
+      ScrcpySessionState.streaming,
+    );
+    final video = _FakeVideoController();
+    final collector = ScrcpySessionMetricsCollector(
+      sessionState: session,
+      videoCodec: 'h264',
+      interval: const Duration(days: 1),
+      historyLimit: 2,
+      clock: () => now,
+    );
+    addTearDown(collector.dispose);
+    addTearDown(session.dispose);
+    collector.attach(video: video);
+    for (var index = 1; index <= 3; index++) {
+      now = now.add(const Duration(seconds: 1));
+      video.state = ScrcpyVideoState(
+        status: ScrcpyVideoStatus.ready,
+        bytesReceived: index * 125000,
+        framesRendered: index * 30,
+        framesPerSecond: 30,
+      );
+      collector.sampleNow();
+    }
+
+    expect(collector.history, hasLength(2));
+    expect(collector.history.last.framesRendered, 90);
+    final aggregate = ScrcpyMetricsAggregate.fromSessions(collector.history);
+    expect(aggregate.sessionCount, 2);
+    expect(aggregate.streamingCount, 2);
+    expect(aggregate.totalFramesPerSecond, 60);
+  });
+
+  test('diagnostics report exports versioned histories and aggregate', () {
+    final snapshot = ScrcpySessionMetricsSnapshot(
+      observedAt: DateTime(2026),
+      sessionState: ScrcpySessionState.streaming,
+      videoStatus: ScrcpyVideoStatus.ready,
+      audioStatus: null,
+      videoBytesReceived: 100,
+      audioBytesReceived: 0,
+      videoBitRate: 800,
+      audioBitRate: 0,
+      videoPacketsReceived: 1,
+      audioPacketsReceived: 0,
+      framesRendered: 1,
+      framesPerSecond: 1,
+      audioBuffersPlayed: 0,
+      audioBuffersDropped: 0,
+      audioBufferedBytes: 0,
+      reconnectCount: 0,
+      errorCount: 0,
+      stallCount: 0,
+    );
+    final report = ScrcpyDiagnosticsReport(
+      generatedAt: DateTime(2026),
+      sessions: <String, List<ScrcpySessionMetricsSnapshot>>{
+        'session-1': <ScrcpySessionMetricsSnapshot>[snapshot],
+      },
+      process: const <ScrcpyProcessMetricsSnapshot>[],
+      metadata: const <String, Object?>{'platform': 'windows'},
+    );
+
+    final json = report.toJson();
+    expect(json['schemaVersion'], 1);
+    expect((json['aggregate']! as Map<String, Object?>)['sessionCount'], 1);
+    expect(report.encode(), contains('session-1'));
+  });
 }
 
 final class _FakeVideoController extends ChangeNotifier
