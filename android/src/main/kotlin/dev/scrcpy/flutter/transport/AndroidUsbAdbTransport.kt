@@ -26,6 +26,14 @@ internal data class AndroidUsbDeviceInfo(
     val authorized: Boolean,
 )
 
+internal data class AndroidUsbHostStatus(
+    val attachedDeviceCount: Int,
+    val adbDeviceCount: Int,
+    val authorizedDeviceCount: Int,
+    val permissionRequestPending: Boolean,
+    val permissionDenied: Boolean,
+)
+
 /** Owns Android USB Host permission, bulk endpoints and direct ADB links. */
 internal class AndroidUsbAdbTransport(
     context: Context,
@@ -81,6 +89,22 @@ internal class AndroidUsbAdbTransport(
                 authorized = authorized,
             )
         }
+
+    fun status(requestPermission: Boolean): AndroidUsbHostStatus {
+        if (requestPermission) permissionDenied.clear()
+        val attached = manager.deviceList.values.toList()
+        val adbDevices = attached.filter { findAdbInterface(it) != null }
+        if (requestPermission) {
+            adbDevices.filterNot(manager::hasPermission).forEach(::requestPermission)
+        }
+        return AndroidUsbHostStatus(
+            attachedDeviceCount = attached.size,
+            adbDeviceCount = adbDevices.size,
+            authorizedDeviceCount = adbDevices.count(manager::hasPermission),
+            permissionRequestPending = adbDevices.any { it.deviceId in permissionRequests },
+            permissionDenied = adbDevices.any { it.deviceId in permissionDenied },
+        )
+    }
 
     fun hasActiveConnection(): Boolean = links.values.any { it.connection.isAlive() }
 

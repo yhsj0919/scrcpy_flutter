@@ -364,6 +364,17 @@ class ScrcpyFlutterPlugin : FlutterPlugin {
                             "state" to if (device.authorized) "device" else "noPermissions",
                         )
                     }
+                    "usbHostStatus" -> adb.usbHostStatus(
+                        call.argument<Boolean>("requestPermission") == true,
+                    ).let { status ->
+                        mapOf(
+                            "attachedDeviceCount" to status.attachedDeviceCount,
+                            "adbDeviceCount" to status.adbDeviceCount,
+                            "authorizedDeviceCount" to status.authorizedDeviceCount,
+                            "permissionRequestPending" to status.permissionRequestPending,
+                            "permissionDenied" to status.permissionDenied,
+                        )
+                    }
                     "shell" -> adb.shellResult(
                         call.stringArgument("serial"),
                         call.stringArgument("command"),

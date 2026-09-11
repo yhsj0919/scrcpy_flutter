@@ -15,11 +15,7 @@ extension on ScrcpyClient {
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(
-    DeviceWallDemo(
-      client: createDefaultScrcpyClient(),
-    ),
-  );
+  runApp(DeviceWallDemo(client: createDefaultScrcpyClient()));
 }
 
 class DeviceWallDemo extends StatelessWidget {
@@ -54,6 +50,8 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
   Object? _error;
   bool _loading = false;
   bool _changingConnection = false;
+  bool _usbStatusLoading = false;
+  AdbUsbHostStatus? _usbHostStatus;
   DateTime? _lastUpdated;
 
   @override
@@ -77,6 +75,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       if (mounted) setState(() => _error = error);
     } finally {
       if (mounted) setState(() => _loading = false);
+      await _loadUsbHostStatus();
     }
   }
 
@@ -97,6 +96,7 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
         '-${snapshot.removed.length} 状态${snapshot.changed.length}',
       );
     }
+    unawaited(_loadUsbHostStatus());
   }
 
   Future<void> _refresh() async {
@@ -107,11 +107,33 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
     });
     try {
       await _deviceMonitor.refresh();
+      await _loadUsbHostStatus();
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error);
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadUsbHostStatus({bool requestPermission = false}) async {
+    if (widget.client.adbClient case final AdbUsbHostProvider provider) {
+      if (requestPermission && mounted) {
+        setState(() => _usbStatusLoading = true);
+      }
+      try {
+        final status = await provider.getUsbHostStatus(
+          requestPermission: requestPermission,
+        );
+        if (mounted) setState(() => _usbHostStatus = status);
+        if (requestPermission) await _deviceMonitor.refresh();
+      } catch (error) {
+        if (mounted) setState(() => _error = error);
+      } finally {
+        if (requestPermission && mounted) {
+          setState(() => _usbStatusLoading = false);
+        }
+      }
     }
   }
 
@@ -330,6 +352,14 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
               ),
             ),
           ),
+          if (_usbHostStatus case final status?)
+            _UsbHostStatusCard(
+              status: status,
+              loading: _usbStatusLoading,
+              onRefresh: _usbStatusLoading
+                  ? null
+                  : () => _loadUsbHostStatus(requestPermission: true),
+            ),
           if (_loading || _changingConnection) const LinearProgressIndicator(),
           if (_error case final error?)
             Card(
@@ -373,6 +403,72 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       '${value.hour.toString().padLeft(2, '0')}:'
       '${value.minute.toString().padLeft(2, '0')}:'
       '${value.second.toString().padLeft(2, '0')}';
+}
+
+class _UsbHostStatusCard extends StatelessWidget {
+  const _UsbHostStatusCard({
+    required this.status,
+    required this.loading,
+    required this.onRefresh,
+  });
+
+  final AdbUsbHostStatus status;
+  final bool loading;
+  final VoidCallback? onRefresh;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: ListTile(
+      leading: Icon(_icon(status.state)),
+      title: Text(_title(status.state)),
+      subtitle: Text(_description(status)),
+      trailing: loading
+          ? const SizedBox.square(
+              dimension: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : TextButton.icon(
+              onPressed: onRefresh,
+              icon: const Icon(Icons.usb),
+              label: Text(
+                status.state == AdbUsbHostState.permissionDenied ||
+                        status.state == AdbUsbHostState.permissionRequired
+                    ? '重新授权'
+                    : '重新扫描',
+              ),
+            ),
+    ),
+  );
+
+  static String _title(AdbUsbHostState state) => switch (state) {
+    AdbUsbHostState.noDevice => '未检测到 USB Host 设备',
+    AdbUsbHostState.noAdbInterface => 'USB 设备未提供 ADB 接口',
+    AdbUsbHostState.permissionRequired => 'USB 设备等待授权',
+    AdbUsbHostState.permissionPending => '正在等待 USB 权限',
+    AdbUsbHostState.permissionDenied => 'USB 权限已拒绝',
+    AdbUsbHostState.ready => 'USB ADB 已就绪',
+  };
+
+  static String _description(AdbUsbHostStatus status) => switch (status.state) {
+    AdbUsbHostState.noDevice =>
+      '如果手机已经连接，USB 角色可能反向。请让本机连接 OTG Host 端，并关闭厂商换机应用。',
+    AdbUsbHostState.noAdbInterface =>
+      '检测到 ${status.attachedDeviceCount} 个 USB 设备，但没有 ADB Interface。请检查被控端 USB 调试和数据角色。',
+    AdbUsbHostState.permissionRequired => '检测到 ADB 设备，需要允许本应用访问 USB。',
+    AdbUsbHostState.permissionPending => '请在系统弹窗中允许本应用访问 USB 设备。',
+    AdbUsbHostState.permissionDenied => '可重新申请权限；部分设备需要重新插拔 OTG 连接。',
+    AdbUsbHostState.ready =>
+      'ADB 设备 ${status.adbDeviceCount} 台，已授权 ${status.authorizedDeviceCount} 台。',
+  };
+
+  static IconData _icon(AdbUsbHostState state) => switch (state) {
+    AdbUsbHostState.ready => Icons.usb,
+    AdbUsbHostState.permissionPending => Icons.hourglass_top,
+    AdbUsbHostState.permissionDenied => Icons.usb_off,
+    AdbUsbHostState.permissionRequired => Icons.lock_outline,
+    AdbUsbHostState.noAdbInterface => Icons.device_unknown,
+    AdbUsbHostState.noDevice => Icons.usb_off,
+  };
 }
 
 class _DeviceTile extends StatelessWidget {

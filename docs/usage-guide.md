@@ -138,6 +138,19 @@ for (final device in devices) {
 
 常见状态包括 `device`、`unauthorized`、`offline`、`recovery`、`bootloader`、`sideload`、`noPermissions`、`paired` 和 `unknown`。只有 `device.isReady == true` 时才适合启动管理和投屏操作。
 
+Android 宿主可以在默认 ADB 后端支持时读取 USB Host 状态：
+
+```dart
+if (client.adbClient case final AdbUsbHostProvider usbHost) {
+  final status = await usbHost.getUsbHostStatus();
+  if (status.state == AdbUsbHostState.permissionDenied) {
+    await usbHost.getUsbHostStatus(requestPermission: true);
+  }
+}
+```
+
+`noDevice` 表示本机没有枚举到 USB 外设；两台 Type-C 手机已经连接时，这通常意味着 USB Host/Peripheral 角色与预期相反。`noAdbInterface` 表示本机已经成为 Host 并看到 USB 设备，但目标没有暴露 ADB 接口，需检查 USB 调试、默认 USB 功能或厂商换机应用。普通第三方应用不能通过该接口强制交换 USB 数据角色。
+
 ### 3.2 持续监听设备变化
 
 ```dart

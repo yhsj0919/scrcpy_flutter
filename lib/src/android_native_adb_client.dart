@@ -12,6 +12,7 @@ import 'scrcpy_client.dart';
 final class AndroidNativeAdbClient
     implements
         AdbClient,
+        AdbUsbHostProvider,
         ScrcpyApplicationLabelProvider,
         ScrcpyVideoCapabilitiesProvider {
   static const _channel = MethodChannel('scrcpy_flutter/android_adb');
@@ -38,6 +39,33 @@ final class AndroidNativeAdbClient
             lastSeenAt: DateTime.now(),
           ),
     ];
+  }
+
+  @override
+  Future<AdbUsbHostStatus> getUsbHostStatus({
+    bool requestPermission = false,
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    _throwIfCancelled(cancellationToken);
+    final response = await _invokeMap(
+      'usbHostStatus',
+      AdbErrorCode.commandFailed,
+      <String, Object>{'requestPermission': requestPermission},
+    );
+    if (response == null) {
+      throw const AdbException(
+        AdbErrorCode.invalidResponse,
+        'Android USB Host status returned no result',
+      );
+    }
+    return AdbUsbHostStatus(
+      attachedDeviceCount: response['attachedDeviceCount'] as int? ?? 0,
+      adbDeviceCount: response['adbDeviceCount'] as int? ?? 0,
+      authorizedDeviceCount: response['authorizedDeviceCount'] as int? ?? 0,
+      permissionRequestPending:
+          response['permissionRequestPending'] as bool? ?? false,
+      permissionDenied: response['permissionDenied'] as bool? ?? false,
+    );
   }
 
   @override

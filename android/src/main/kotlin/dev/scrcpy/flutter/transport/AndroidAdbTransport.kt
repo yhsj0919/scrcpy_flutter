@@ -99,6 +99,8 @@ internal class AndroidAdbTransport(context: Context) : Closeable {
 
     fun hasActiveTarget(): Boolean = hasDesiredEndpoint() || usb.hasActiveConnection()
 
+    fun usbHostStatus(requestPermission: Boolean) = usb.status(requestPermission)
+
     fun shell(serial: String, command: String): String = device(serial).shell(command)
 
     fun shellResult(serial: String, command: String): ShellResult =
