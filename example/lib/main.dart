@@ -13,7 +13,14 @@ extension on ScrcpyClient {
   AdbToolkit get adbToolkit => AdbToolkit(adbClient);
 }
 
-void main() => runApp(DeviceWallDemo(client: createDefaultScrcpyClient()));
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(
+    DeviceWallDemo(
+      client: createDefaultScrcpyClient(),
+    ),
+  );
+}
 
 class DeviceWallDemo extends StatelessWidget {
   const DeviceWallDemo({required this.client, super.key});
@@ -174,18 +181,11 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
   }
 
   Future<void> _pair() async {
-    List<AdbMdnsService> discoveredServices = const <AdbMdnsService>[];
-    try {
-      discoveredServices = await widget.client.adbToolkit
-          .discoverMdnsServices();
-    } catch (_) {
-      // Manual entry remains available when mDNS is unavailable.
-    }
-    if (!mounted) return;
     final request = await showDialog<_PairDeviceRequest>(
       context: context,
-      builder: (context) =>
-          _PairDeviceDialog(discoveredServices: discoveredServices),
+      builder: (context) => _PairDeviceDialog(
+        discoverServices: widget.client.adbToolkit.discoverMdnsServices,
+      ),
     );
     if (request == null || _changingConnection) return;
     setState(() {
@@ -193,16 +193,14 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
       _error = null;
     });
     try {
-      await widget.client.adbToolkit.pair(
+      final connectedEndpoint = await widget.client.adbToolkit.pairAndConnect(
         request.pairingEndpoint,
         request.pairingCode,
+        connectionEndpoint: request.connectionEndpoint,
       );
-      if (request.connectionEndpoint case final endpoint?) {
-        await widget.client.adbToolkit.connect(endpoint);
-      }
       await _refreshAfterConnectionChange();
       if (mounted) {
-        _showMessage(request.connectionEndpoint == null ? '配对成功' : '配对并连接成功');
+        _showMessage(connectedEndpoint == null ? '配对成功，未发现连接端口' : '配对并连接成功');
       }
     } catch (error) {
       if (mounted) setState(() => _error = error);
@@ -559,9 +557,9 @@ final class _PairDeviceRequest {
 }
 
 class _PairDeviceDialog extends StatefulWidget {
-  const _PairDeviceDialog({required this.discoveredServices});
+  const _PairDeviceDialog({required this.discoverServices});
 
-  final List<AdbMdnsService> discoveredServices;
+  final Future<List<AdbMdnsService>> Function() discoverServices;
 
   @override
   State<_PairDeviceDialog> createState() => _PairDeviceDialogState();
@@ -572,6 +570,26 @@ class _PairDeviceDialogState extends State<_PairDeviceDialog> {
   final _pairingAddressController = TextEditingController();
   final _pairingCodeController = TextEditingController();
   final _connectionAddressController = TextEditingController();
+  List<AdbMdnsService> _discoveredServices = const <AdbMdnsService>[];
+  bool _discovering = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _discover();
+  }
+
+  Future<void> _discover() async {
+    if (mounted) setState(() => _discovering = true);
+    try {
+      final services = await widget.discoverServices();
+      if (mounted) setState(() => _discoveredServices = services);
+    } catch (_) {
+      // Manual entry remains available when mDNS is unavailable.
+    } finally {
+      if (mounted) setState(() => _discovering = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -591,7 +609,25 @@ class _PairDeviceDialogState extends State<_PairDeviceDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            if (widget.discoveredServices.isNotEmpty) ...<Widget>[
+            if (_discovering) ...<Widget>[
+              const LinearProgressIndicator(),
+              const SizedBox(height: 8),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('正在搜索无线调试服务，也可以直接手动输入'),
+              ),
+              const SizedBox(height: 12),
+            ] else if (_discoveredServices.isEmpty) ...<Widget>[
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _discover,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('未发现设备，重新搜索'),
+                ),
+              ),
+              const SizedBox(height: 4),
+            ] else ...<Widget>[
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
@@ -604,7 +640,7 @@ class _PairDeviceDialogState extends State<_PairDeviceDialog> {
                 spacing: 8,
                 runSpacing: 8,
                 children: <Widget>[
-                  for (final service in widget.discoveredServices)
+                  for (final service in _discoveredServices)
                     ActionChip(
                       avatar: Icon(
                         service.type == AdbMdnsServiceType.pairing
@@ -620,19 +656,7 @@ class _PairDeviceDialogState extends State<_PairDeviceDialog> {
                         if (service.type == AdbMdnsServiceType.pairing) {
                           _pairingAddressController.text =
                               service.endpoint.authority;
-                          final matchingConnection = widget.discoveredServices
-                              .where(
-                                (candidate) =>
-                                    candidate.type ==
-                                        AdbMdnsServiceType.connect &&
-                                    candidate.endpoint.host ==
-                                        service.endpoint.host,
-                              )
-                              .lastOrNull;
-                          if (matchingConnection != null) {
-                            _connectionAddressController.text =
-                                matchingConnection.endpoint.authority;
-                          }
+                          _connectionAddressController.clear();
                         } else {
                           _connectionAddressController.text =
                               service.endpoint.authority;
@@ -1404,7 +1428,8 @@ class _DeviceSessionPageState extends State<DeviceSessionPage> {
                   subtitle: Text(
                     '显示 ${video.framesRendered} 帧 · '
                     '接收 ${video.packetsReceived} 包 · '
-                    '${(video.bytesReceived / 1024 / 1024).toStringAsFixed(1)} MB',
+                    '${(video.bytesReceived / 1024 / 1024).toStringAsFixed(1)} MB'
+                    '${video.decoderInputsDropped == 0 ? '' : ' · 解码丢帧 ${video.decoderInputsDropped}'}',
                   ),
                 ),
               ),

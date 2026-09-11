@@ -92,6 +92,7 @@ final class ScrcpyVideoOptions {
     this.bitRate = 8 * 1000 * 1000,
     this.codec = ScrcpyVideoCodec.h264,
     this.encoder,
+    this.lowLatency = true,
   });
 
   final int maxSize;
@@ -102,6 +103,16 @@ final class ScrcpyVideoOptions {
   /// Optional Android MediaCodec encoder name, for example
   /// `c2.android.avc.encoder`. Null lets scrcpy select the encoder.
   final String? encoder;
+
+  /// Requests an encoder configuration suitable for interactive mirroring.
+  final bool lowLatency;
+
+  String? get codecOptions {
+    if (!lowLatency) return null;
+    return codec == ScrcpyVideoCodec.h264
+        ? 'profile=1,max-bframes=0,latency=0'
+        : 'max-bframes=0,latency=0';
+  }
 
   void validate() {
     if (maxSize < 0 || maxSize > 16384) {
@@ -317,11 +328,15 @@ final class ScrcpyRawSession extends ChangeNotifier {
     try {
       await video.start();
       final stream = connection.audio;
-      if (stream != null) {
-        audio = createNativeScrcpyAudioController(
-          stream,
-          bitRate: configuration.audio.bitRate,
-        );
+      if (configuration.audioEnabled &&
+          connection is ScrcpyAudioControllerProvider) {
+        audio = (connection as ScrcpyAudioControllerProvider)
+            .createAudioController();
+      } else if (stream != null) {
+        audio = createNativeScrcpyAudioController(stream,
+          bitRate: configuration.audio.bitRate);
+      }
+      if (audio != null) {
         try {
           await audio.setVolume(configuration.audio.initialVolume);
           await audio.setMuted(configuration.audio.initiallyMuted);

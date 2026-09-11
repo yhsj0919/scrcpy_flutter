@@ -1,9 +1,11 @@
 import 'package:adb_client/adb_client.dart';
 
 import 'scrcpy_session.dart';
+import 'scrcpy_audio.dart';
 import 'scrcpy_audio_packet.dart';
 import 'scrcpy_input.dart';
 import 'scrcpy_video_packet.dart';
+import 'scrcpy_video.dart';
 import 'scrcpy_video_connection_stub.dart'
     if (dart.library.io) 'scrcpy_video_connection_io.dart'
     as implementation;
@@ -52,6 +54,17 @@ abstract interface class ScrcpyVideoConnection {
 
   Future<void> close();
 }
+
+/// A platform connection which already owns its decoder and Flutter texture.
+abstract interface class ScrcpyVideoControllerProvider {
+  ScrcpyVideoController createVideoController();
+}
+
+/// A platform connection which owns audio capture, decoding and playback.
+abstract interface class ScrcpyAudioControllerProvider {
+  ScrcpyAudioController createAudioController();
+}
+
 
 abstract interface class ScrcpyVideoConnector {
   Future<ScrcpyVideoConnection> connect(

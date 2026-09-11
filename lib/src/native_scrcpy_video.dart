@@ -12,7 +12,9 @@ import 'scrcpy_video_packet.dart';
 
 ScrcpyVideoController createNativeScrcpyVideoController(
   ScrcpyVideoConnection connection,
-) => _NativeScrcpyVideoController(connection);
+) => connection is ScrcpyVideoControllerProvider
+    ? (connection as ScrcpyVideoControllerProvider).createVideoController()
+    : _NativeScrcpyVideoController(connection);
 
 final class _NativeScrcpyVideoController extends ChangeNotifier
     implements ScrcpyVideoController {
@@ -151,7 +153,7 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
       if (!codec.isH264) {
         throw ScrcpyException(
           ScrcpyErrorCode.unsupportedCapability,
-          'The Windows native video backend currently supports H.264 only; '
+          'The native video backend currently supports H.264 only; '
           'received codec 0x${codec.codecId.toRadixString(16)}',
         );
       }
@@ -167,27 +169,17 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
         throw StateError('Native video backend did not create a texture');
       }
       _textureId = textureId;
-      late final StreamSubscription<ScrcpyVideoPacket> subscription;
-      subscription = _connection.packets.listen(
+      _subscription = _connection.packets.listen(
         (packet) {
-          subscription.pause();
           final activeTextureId = _textureId;
-          if (activeTextureId == null) {
-            subscription.resume();
-          } else {
-            unawaited(
-              _decode(
-                activeTextureId,
-                packet,
-              ).whenComplete(subscription.resume),
-            );
+          if (activeTextureId != null) {
+            unawaited(_decode(activeTextureId, packet));
           }
         },
         onError: (Object error) => _setValue(
           ScrcpyVideoState(status: ScrcpyVideoStatus.error, error: error),
         ),
       );
-      _subscription = subscription;
       _sessionSubscription = _connection.sessions.listen(
         (session) {
           _sessionChange = _sessionChange.then((_) => _handleSession(session));
@@ -250,6 +242,7 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
           packetsReceived: _packetCount,
           framesRendered: frames,
           framesPerSecond: fps,
+          decoderInputsDropped: stats['needMore'] as int? ?? 0,
           error: _value.error,
         ),
       );
@@ -298,6 +291,7 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
           decoder: current.decoder,
           bytesReceived: _connection.bytesReceived,
           packetsReceived: _packetCount,
+          decoderInputsDropped: current.decoderInputsDropped,
         ),
       );
     } catch (error) {
@@ -332,6 +326,7 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
         return;
       }
       final config = _pendingConfig;
+      _pendingConfig = null;
       await _channel.invokeMethod<void>('decode', <String, Object>{
         'textureId': textureId,
         'data': config == null
@@ -347,7 +342,6 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
         'config': false,
         'keyFrame': packet.isKeyFrame,
       });
-      _pendingConfig = null;
     } catch (error) {
       _setValue(
         ScrcpyVideoState(status: ScrcpyVideoStatus.error, error: error),

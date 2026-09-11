@@ -11,6 +11,8 @@
 .svn/
 .swiftpm/
 migrate_working_dir/
+.research/
+.reference/
 
 # IntelliJ related
 *.iml
@@ -27,12 +29,15 @@ migrate_working_dir/
 # Flutter/Dart/Pub related
 # Libraries should not include pubspec.lock, per https://dart.dev/guides/libraries/private-files#pubspeclock.
 /pubspec.lock
+/example/pubspec.lock
+/packages/*/pubspec.lock
 **/doc/api/
 .dart_tool/
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
 .widget_preview/
+.dart_appdata/
 **/build/
 **/build_*/
 **/coverage/
@@ -43,8 +48,13 @@ migrate_working_dir/
 # Native build tools
 cmake-build-*/
 CMakeSettings.json
+**/.cxx/
+**/.externalNativeBuild/
+**/.gradle/
+**/.kotlin/
 
 # Android local build outputs
 **/android/app/debug/
 **/android/app/profile/
 **/android/app/release/
+**/GeneratedPluginRegistrant.java

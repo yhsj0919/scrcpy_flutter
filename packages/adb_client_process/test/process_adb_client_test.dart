@@ -100,9 +100,7 @@ void main() {
     expect(await running.exitCode, isNot(0));
   });
 
-  test(
-    'typed pair call redacts endpoint and pairing code diagnostics',
-    () async {
+  test('typed pair call redacts the pairing code diagnostics', () async {
       final diagnostics = <Map<String, Object?>>[];
       client = ProcessAdbClient(
         executable: Platform.resolvedExecutable,
@@ -120,9 +118,12 @@ void main() {
       );
 
       final start = diagnostics.first;
-      expect(start['arguments'], <String>['pair', '<redacted>', '<redacted>']);
+      expect(start['arguments'], <String>[
+        'pair',
+        '192.0.2.1:37123',
+        '<redacted>',
+      ]);
       expect(start.toString(), isNot(contains('123456')));
-      expect(start.toString(), isNot(contains('192.0.2.1')));
     },
   );
 
@@ -237,11 +238,22 @@ void main() {
         '111111',
       ),
       throwsA(
-        isA<AdbException>().having(
-          (error) => error.code,
-          'code',
-          AdbErrorCode.pairingFailed,
-        ),
+        isA<AdbException>()
+            .having(
+              (error) => error.code,
+              'code',
+              AdbErrorCode.pairingFailed,
+            )
+            .having(
+              (error) => error.message,
+              'message',
+              contains('pairing code expired'),
+            )
+            .having(
+              (error) => error.message,
+              'message',
+              isNot(contains('111111')),
+            ),
       ),
     );
   });

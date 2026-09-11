@@ -1,6 +1,21 @@
 # 第三方组件与二进制清单
 
-更新于 2026-09-03。二进制升级必须同时更新版本、SHA-256、NOTICE 和验证记录。
+更新于 2026-09-11。二进制升级必须同时更新版本、SHA-256、NOTICE 和验证记录。
+
+## ScrcpyForAndroid 源码基线
+
+- 来源：<https://github.com/Miuzarte/ScrcpyForAndroid>。
+- 许可证：Apache-2.0，完整文本保留在 `android/third_party/scrcpy_for_android/LICENSE`。
+- 使用范围：Android 宿主的 ADB、scrcpy socket 和媒体链路参考实现。
+- 来源与同步规则：`android/third_party/scrcpy_for_android/UPSTREAM.md`。
+- 只移植与插件后端相关的模块，不引入上游 Compose 页面和应用业务代码。
+- Android 配对 JNI 使用 `io.github.vvb2060.ndk:boringssl:20251124`。
+  C++ 运行库使用宿主 NDK 自带的 `c++_static`，避免绑定上游特定 LLVM
+  版本预编译的 libc++。
+- ADB TLS 证书由 Android JCA 生成，不引入 Bouncy Castle，宿主无需处理其
+  `META-INF` 资源冲突。
+
+已删除仓库内的 `flutter_adb` 副本及其密码学、mDNS 依赖。Kadb 也未被采用，仓库和构建产物不得包含其 GPL-3.0 配对依赖。
 
 ## Android SDK Platform-Tools（Windows）
 

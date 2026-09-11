@@ -7,6 +7,7 @@ enum AdbErrorCode {
   timedOut,
   cancelled,
   invalidResponse,
+  unsupportedCapability,
 }
 
 final class AdbException implements Exception {

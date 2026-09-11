@@ -95,6 +95,39 @@ class FakeConnectionAdbClient implements AdbClient, AdbConnectionService {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+class FakeApplicationLabelClient
+    implements AdbClient, ScrcpyApplicationLabelProvider {
+  @override
+  Future<AdbCommandResult> shell(
+    String serial,
+    List<String> arguments, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    final output = switch (arguments) {
+      ['pm', 'list', 'packages', ...] =>
+        'package:/data/app/example/base.apk=com.example.app uid:10001 versionCode:1\n',
+      ['cmd', 'package', 'query-activities', ...] =>
+        'com.example.app/.MainActivity\n',
+      _ => '',
+    };
+    return AdbCommandResult(
+      exitCode: 0,
+      stdout: output.codeUnits,
+      stderr: const <int>[],
+      elapsed: Duration.zero,
+    );
+  }
+
+  @override
+  Future<String> loadApplicationLabels(
+    String deviceSerial, {
+    AdbCancellationToken? cancellationToken,
+  }) async => '* 示例应用 com.example.app\n';
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 class FakeUnifiedDiscoveryAdbClient
     implements AdbClient, AdbMdnsDiscoveryService {
   @override
@@ -260,6 +293,17 @@ malformed line
     expect(labels['com.example.spaces'], 'App with spaces');
     expect(labels['com.palsmon.app'], '媒花易数');
     expect(labels, hasLength(3));
+  });
+
+  test('application list uses a platform label provider', () async {
+    final applications = await ScrcpyClient(
+      adbClient: FakeApplicationLabelClient(),
+    ).listApplications('test-device');
+
+    expect(applications, hasLength(1));
+    expect(applications.single.packageName, 'com.example.app');
+    expect(applications.single.name, '示例应用');
+    expect(applications.single.launchable, isTrue);
   });
 
   test('video options validate quality and encoder selections', () {

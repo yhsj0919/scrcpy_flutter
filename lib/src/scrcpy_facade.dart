@@ -681,6 +681,7 @@ final class ScrcpyView extends StatelessWidget {
     this.interactive = true,
     this.autofocus = true,
     this.captureAllKeys = false,
+    this.blockHostGestures = true,
     this.gestureEdgeThreshold = 0.02,
     this.placeholder,
     this.errorBuilder,
@@ -695,6 +696,7 @@ final class ScrcpyView extends StatelessWidget {
   final bool interactive;
   final bool autofocus;
   final bool captureAllKeys;
+  final bool blockHostGestures;
   final double gestureEdgeThreshold;
   final Widget? placeholder;
   final ScrcpyViewErrorBuilder? errorBuilder;
@@ -742,6 +744,7 @@ final class ScrcpyView extends StatelessWidget {
             alignment: alignment,
             autofocus: autofocus,
             captureAllKeys: captureAllKeys,
+            blockHostGestures: blockHostGestures,
             gestureEdgeThreshold: gestureEdgeThreshold,
             child: view,
           );
@@ -760,6 +763,7 @@ final class ScrcpyGroupView extends StatelessWidget {
     this.interactive = true,
     this.autofocus = true,
     this.captureAllKeys = false,
+    this.blockHostGestures = true,
     this.gestureEdgeThreshold = 0.02,
     this.placeholder,
     this.errorBuilder,
@@ -772,6 +776,7 @@ final class ScrcpyGroupView extends StatelessWidget {
   final bool interactive;
   final bool autofocus;
   final bool captureAllKeys;
+  final bool blockHostGestures;
   final double gestureEdgeThreshold;
   final Widget? placeholder;
   final ScrcpyViewErrorBuilder? errorBuilder;
@@ -786,6 +791,7 @@ final class ScrcpyGroupView extends StatelessWidget {
       interactive: interactive,
       autofocus: autofocus,
       captureAllKeys: captureAllKeys,
+      blockHostGestures: blockHostGestures,
       gestureEdgeThreshold: gestureEdgeThreshold,
       placeholder: placeholder,
       errorBuilder: errorBuilder,

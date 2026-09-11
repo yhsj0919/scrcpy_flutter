@@ -155,6 +155,58 @@ void main() {
     controller.dispose();
   });
 
+  test(
+    'does not serialize video packets on platform channel replies',
+    () async {
+      const channel = MethodChannel('scrcpy_flutter/video');
+      final firstDecode = Completer<void>();
+      var decodeCalls = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            return switch (call.method) {
+              'create' => 1,
+              'decode' => ++decodeCalls == 1 ? firstDecode.future : null,
+              'dispose' => null,
+              'videoStats' => <String, Object>{'frames': 0},
+              _ => throw MissingPluginException(call.method),
+            };
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+      final connection = _FakeVideoConnection();
+      final controller = createNativeScrcpyVideoController(connection);
+      await controller.start();
+
+      connection.packetsController
+        ..add(
+          ScrcpyVideoPacket(
+            data: Uint8List.fromList(<int>[1]),
+            presentationTimeUs: 1,
+            isConfig: false,
+            isKeyFrame: true,
+          ),
+        )
+        ..add(
+          ScrcpyVideoPacket(
+            data: Uint8List.fromList(<int>[2]),
+            presentationTimeUs: 2,
+            isConfig: false,
+            isKeyFrame: false,
+          ),
+        );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(decodeCalls, 2);
+
+      firstDecode.complete();
+      await controller.stop();
+      controller.dispose();
+    },
+  );
+
   test('closes the connection when native texture disposal fails', () async {
     const channel = MethodChannel('scrcpy_flutter/video');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

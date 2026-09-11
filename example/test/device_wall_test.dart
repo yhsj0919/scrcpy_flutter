@@ -85,6 +85,30 @@ void main() {
     expect(await cellWidth(1900), closeTo(458, 0.1));
   });
 
+  testWidgets('keeps device metadata readable in a narrow window', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DeviceWallPage(
+          client: ScrcpyClient(adbClient: _FakeAdbClient()),
+          devices: _devices(1),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(tester.getSize(find.text('Android 设备')).width, greaterThan(80));
+    expect(find.byTooltip('截取当前画面'), findsOneWidget);
+    expect(find.byTooltip('聚焦显示'), findsOneWidget);
+  });
+
   testWidgets('touch broadcast is opt-in and rejects targets without video', (
     tester,
   ) async {

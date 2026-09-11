@@ -19,7 +19,15 @@ final devices = await adb.discoverDevices();
 final subscription = adb.watchDevices().listen((snapshot) {
   // 使用 snapshot.devices 更新界面。
 });
+
+final mdnsSubscription = adb.watchMdnsServices().listen((snapshot) {
+  // 使用 snapshot.services 展示可配对、可连接的无线调试设备。
+});
 ```
+
+两种监听都在建立订阅时启动、取消订阅时释放内部轮询。`watchDevices()` 会把 mDNS connect 服务合并为可连接网络设备；只有配对页面需要单独监听 `watchMdnsServices()`。不支持 mDNS 的平台返回空快照，不要求业务层判断平台。
+
+Wireless Debugging 建议直接调用 `adb.pairAndConnect(pairingEndpoint, pairingCode)`。它会在配对后自动发现动态连接端口；仅当需要自定义配对 UI 的实时列表时，才需要直接使用 `watchMdnsServices()`。
 
 Windows 默认使用插件内置的 ADB 和 scrcpy server，宿主无需安装 Android SDK。必要时可向 `createDefaultScrcpyManager()` 传入 `adbExecutablePath` 或 `scrcpyServerPath`。
 
@@ -40,10 +48,15 @@ final session = await scrcpy.createSession(
   ),
 );
 
-ScrcpyView(session: session);
+ScrcpyView(
+  session: session,
+  blockHostGestures: true,
+);
 ```
 
 `ScrcpyView` 可放入任意 Flutter 布局，也可以循环 `scrcpy.sessions` 构建多个画面。移除 View 不关闭 Session；显式关闭使用：
+
+默认情况下，投屏区域会消费远程触摸、拖动和滚轮手势，避免同时驱动外层页面。需要宿主手势穿透时设置 `blockHostGestures: false`。
 
 ```dart
 await scrcpy.removeSession(session.id);

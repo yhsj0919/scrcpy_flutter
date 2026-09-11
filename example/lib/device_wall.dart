@@ -1076,6 +1076,74 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
     final theme = Theme.of(context);
     final state = _video?.value;
     final ratio = state?.aspectRatio ?? 16 / 9;
+    final leading = widget.selectionMode
+        ? Checkbox(
+            value: widget.selected,
+            onChanged: (value) => widget.onSelectionChanged(value ?? false),
+          )
+        : Icon(
+            widget.window.device.connectionType == AdbConnectionType.network
+                ? Icons.wifi
+                : Icons.usb,
+          );
+    final subtitle =
+        '${widget.window.device.redactedSerial}'
+        '${widget.window.isVirtual ? ' · 虚拟屏' : ''} · $_statusLabel'
+        '${_reconnectCount == 0 ? '' : ' · 重连 $_reconnectCount 次'}'
+        ' · 流≤${_appliedQuality.maxSize}px/'
+        '${_appliedQuality.maxFps}fps/'
+        '${_formatMbps(_appliedQuality.bitRateMbps)}Mbps'
+        '$_audioStatusSuffix';
+    final actions = <Widget>[
+      IconButton(
+        tooltip: '截取当前画面',
+        onPressed: _session == null
+            ? null
+            : () => unawaited(
+                captureSessionScreenshot(
+                  context,
+                  _session!,
+                  name: widget.window.id,
+                ),
+              ),
+        icon: const Icon(Icons.screenshot_monitor),
+      ),
+      if (_session != null)
+        SessionRecordingButton(
+          key: ValueKey('record-${_session!.id}'),
+          session: _session!,
+          name: widget.window.id,
+        ),
+      IconButton(
+        tooltip: '设置此窗口画质（将重新连接一次）',
+        onPressed: _retrying ? null : _configureQuality,
+        icon: const Icon(Icons.tune),
+      ),
+      IconButton(
+        tooltip: _audioError == null ? _audioLabel : '音频不可用：$_audioError',
+        onPressed: widget.audioFocus.isRegistered(widget.window.audioFocusId)
+            ? widget.onFocus
+            : null,
+        icon: Icon(
+          _audioError != null
+              ? Icons.volume_off
+              : widget.audioFocus.isFocused(widget.window.audioFocusId)
+              ? Icons.volume_up
+              : Icons.volume_mute,
+        ),
+      ),
+      IconButton(
+        tooltip: widget.expanded ? '返回设备墙' : '聚焦显示',
+        onPressed: widget.onToggleExpanded,
+        icon: Icon(widget.expanded ? Icons.fullscreen_exit : Icons.fullscreen),
+      ),
+      if (widget.onClose != null)
+        IconButton(
+          tooltip: '关闭应用窗口',
+          onPressed: widget.onClose,
+          icon: const Icon(Icons.close),
+        ),
+    ];
     return Card(
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
@@ -1087,90 +1155,61 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          ListTile(
-            dense: true,
-            leading: widget.selectionMode
-                ? Checkbox(
-                    value: widget.selected,
-                    onChanged: (value) =>
-                        widget.onSelectionChanged(value ?? false),
-                  )
-                : Icon(
-                    widget.window.device.connectionType ==
-                            AdbConnectionType.network
-                        ? Icons.wifi
-                        : Icons.usb,
+          LayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.maxWidth >= 560) {
+                return ListTile(
+                  dense: true,
+                  leading: leading,
+                  title: Text(widget.window.title),
+                  subtitle: Text(subtitle),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: actions,
                   ),
-            title: Text(widget.window.title),
-            subtitle: Text(
-              '${widget.window.device.redactedSerial}'
-              '${widget.window.isVirtual ? ' · 虚拟屏' : ''} · $_statusLabel'
-              '${_reconnectCount == 0 ? '' : ' · 重连 $_reconnectCount 次'}'
-              ' · 流≤${_appliedQuality.maxSize}px/'
-              '${_appliedQuality.maxFps}fps/'
-              '${_formatMbps(_appliedQuality.bitRateMbps)}Mbps'
-              '$_audioStatusSuffix',
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                IconButton(
-                  tooltip: '截取当前画面',
-                  onPressed: _session == null
-                      ? null
-                      : () => unawaited(
-                          captureSessionScreenshot(
-                            context,
-                            _session!,
-                            name: widget.window.id,
+                );
+              }
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: leading,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                widget.window.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(subtitle, style: theme.textTheme.bodyMedium),
+                            ],
                           ),
                         ),
-                  icon: const Icon(Icons.screenshot_monitor),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      alignment: WrapAlignment.end,
+                      spacing: 2,
+                      runSpacing: 2,
+                      children: actions,
+                    ),
+                  ],
                 ),
-                if (_session != null)
-                  SessionRecordingButton(
-                    key: ValueKey('record-${_session!.id}'),
-                    session: _session!,
-                    name: widget.window.id,
-                  ),
-                IconButton(
-                  tooltip: '设置此窗口画质（将重新连接一次）',
-                  onPressed: _retrying ? null : _configureQuality,
-                  icon: const Icon(Icons.tune),
-                ),
-                IconButton(
-                  tooltip: _audioError == null
-                      ? _audioLabel
-                      : '音频不可用：$_audioError',
-                  onPressed:
-                      widget.audioFocus.isRegistered(widget.window.audioFocusId)
-                      ? widget.onFocus
-                      : null,
-                  icon: Icon(
-                    _audioError != null
-                        ? Icons.volume_off
-                        : widget.audioFocus.isFocused(
-                            widget.window.audioFocusId,
-                          )
-                        ? Icons.volume_up
-                        : Icons.volume_mute,
-                  ),
-                ),
-                IconButton(
-                  tooltip: widget.expanded ? '返回设备墙' : '聚焦显示',
-                  onPressed: widget.onToggleExpanded,
-                  icon: Icon(
-                    widget.expanded ? Icons.fullscreen_exit : Icons.fullscreen,
-                  ),
-                ),
-                if (widget.onClose != null)
-                  IconButton(
-                    tooltip: '关闭应用窗口',
-                    onPressed: widget.onClose,
-                    icon: const Icon(Icons.close),
-                  ),
-              ],
-            ),
+              );
+            },
           ),
           Listener(
             behavior: HitTestBehavior.translucent,

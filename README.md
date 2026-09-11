@@ -54,6 +54,8 @@ await group.home();
 
 - [完整使用指南与功能清单](docs/usage-guide.md)
 - [架构与视频管线](docs/architecture.md)
+- [跨平台适配基线](docs/platform-adaptation.md)
+- [平台功能实现与验收矩阵](docs/platform-feature-matrix.md)
 - [公开 API 基线](docs/public-api.md)
 - [生命周期与资源所有权](docs/lifecycle.md)
 - [实现进度与功能进度](docs/status.md)

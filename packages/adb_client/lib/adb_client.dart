@@ -13,4 +13,5 @@ export 'src/adb_endpoint.dart';
 export 'src/adb_exception.dart';
 export 'src/adb_file_manager.dart';
 export 'src/adb_mdns_service.dart';
+export 'src/adb_mdns_monitor.dart';
 export 'src/adb_toolkit.dart';

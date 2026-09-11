@@ -8,19 +8,42 @@ import 'scrcpy_session.dart';
 import 'scrcpy_video_connection.dart';
 import 'scrcpy_video_capabilities.dart';
 
+abstract interface class ScrcpyApplicationLabelProvider {
+  Future<String> loadApplicationLabels(
+    String deviceSerial, {
+    AdbCancellationToken? cancellationToken,
+  });
+}
+
+abstract interface class ScrcpyVideoCapabilitiesProvider {
+  Future<String> loadVideoEncoders(
+    String deviceSerial, {
+    AdbCancellationToken? cancellationToken,
+  });
+}
+
 /// Root service object owned by the embedding application.
 ///
 /// It intentionally accepts an [AdbClient], so platform transports can be
 /// replaced without changing session or UI code.
 final class ScrcpyClient {
-  const ScrcpyClient({required this.adbClient, this.runtimeInfo});
+  const ScrcpyClient({
+    required this.adbClient,
+    this.runtimeInfo,
+    this._videoConnector,
+  });
 
   final AdbClient adbClient;
   final ScrcpyRuntimeInfo? runtimeInfo;
+  final ScrcpyVideoConnector? _videoConnector;
 
   ScrcpyCapabilities get capabilities => ScrcpyCapabilities(
-    video: runtimeInfo?.scrcpyServerPath?.isNotEmpty == true,
-    control: runtimeInfo?.scrcpyServerPath?.isNotEmpty == true,
+    video:
+        _videoConnector != null ||
+        runtimeInfo?.scrcpyServerPath?.isNotEmpty == true,
+    control:
+        _videoConnector != null ||
+        runtimeInfo?.scrcpyServerPath?.isNotEmpty == true,
   );
 
   ScrcpyRawSession createSession(
@@ -44,6 +67,17 @@ final class ScrcpyClient {
       adbClient: adbClient,
       serial: deviceSerial,
     ).listApplications(cancellationToken: cancellationToken);
+    if (adbClient case final ScrcpyApplicationLabelProvider provider) {
+      try {
+        final output = await provider.loadApplicationLabels(
+          deviceSerial,
+          cancellationToken: cancellationToken,
+        );
+        return _enrichApplicationLabels(applications, output);
+      } catch (_) {
+        return applications;
+      }
+    }
     final serverPath = runtimeInfo?.scrcpyServerPath;
     if (serverPath == null || serverPath.isEmpty) return applications;
 
@@ -66,24 +100,13 @@ final class ScrcpyClient {
         'cleanup=true',
       ], cancellationToken: cancellationToken);
       if (!result.isSuccess) return applications;
-      final labels = parseScrcpyApplicationLabels(
+      return _enrichApplicationLabels(
+        applications,
         utf8.decode(<int>[
           ...result.stdout,
           ...result.stderr,
         ], allowMalformed: true),
       );
-      if (labels.isEmpty) return applications;
-      final enriched =
-          <AdbApplication>[
-            for (final application in applications)
-              application.copyWith(name: labels[application.packageName]),
-          ]..sort((a, b) {
-            final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
-            return byName != 0
-                ? byName
-                : a.packageName.compareTo(b.packageName);
-          });
-      return List<AdbApplication>.unmodifiable(enriched);
     } catch (_) {
       return applications;
     } finally {
@@ -110,10 +133,40 @@ final class ScrcpyClient {
     return labels;
   }
 
+  static List<AdbApplication> _enrichApplicationLabels(
+    List<AdbApplication> applications,
+    String output,
+  ) {
+    final labels = parseScrcpyApplicationLabels(output);
+    if (labels.isEmpty) return applications;
+    final enriched = <AdbApplication>[
+      for (final application in applications)
+        application.copyWith(name: labels[application.packageName]),
+    ]..sort((a, b) {
+      final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      return byName != 0 ? byName : a.packageName.compareTo(b.packageName);
+    });
+    return List<AdbApplication>.unmodifiable(enriched);
+  }
+
   Future<ScrcpyVideoCapabilities> probeVideoCapabilities(
     String deviceSerial, {
     AdbCancellationToken? cancellationToken,
   }) async {
+    if (adbClient case final ScrcpyVideoCapabilitiesProvider provider) {
+      final output = await provider.loadVideoEncoders(
+        deviceSerial,
+        cancellationToken: cancellationToken,
+      );
+      final capabilities = ScrcpyVideoCapabilities.parseServerOutput(output);
+      if (capabilities.encoders.isEmpty) {
+        throw const ScrcpyException(
+          ScrcpyErrorCode.protocolFailure,
+          'scrcpy returned no supported video encoders',
+        );
+      }
+      return capabilities;
+    }
     final serverPath = runtimeInfo?.scrcpyServerPath;
     if (serverPath == null || serverPath.isEmpty) {
       throw const ScrcpyException(
@@ -179,6 +232,7 @@ final class ScrcpyClient {
   }
 
   ScrcpyVideoConnector? _videoConnectorOrNull() {
+    if (_videoConnector case final connector?) return connector;
     final path = runtimeInfo?.scrcpyServerPath;
     if (path == null || path.isEmpty) return null;
     return createScrcpyVideoConnector(

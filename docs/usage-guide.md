@@ -116,6 +116,9 @@ final capabilities = client.capabilities;
 
 这属于自定义后端或诊断场景。普通接入不需要先查询全局能力；不支持的编解码器或音频能力会通过结构化错误报告。`ScrcpyCapabilities` 只描述 scrcpy 视频和实时控制能力，设备发现、USB、网络连接和配对仍属于 ADB。
 
+Windows 使用随插件分发的官方 `adb.exe`。Android 将使用插件原生后端，
+不再提供切换到纯 Dart ADB 的运行参数。设备发现功能延后接入。
+
 ## 3. ADB 基础工具箱
 
 ### 3.1 一次性发现设备
@@ -168,12 +171,31 @@ await adb.disconnect(endpoint);
 
 ```dart
 final pairingEndpoint = AdbEndpoint(host: '192.168.1.20', port: 37123);
-await adb.pair(pairingEndpoint, '123456');
-
-final services = await adb.discoverMdnsServices();
+final connectedEndpoint = await adb.pairAndConnect(
+  pairingEndpoint,
+  '123456',
+);
 ```
 
-配对端口与连接端口不是同一个固定端口，应使用设备界面或 mDNS 返回的端点。配对成功后，再连接 `_adb-tls-connect` 对应端点。
+配对端口与连接端口不是同一个固定端口。`pairAndConnect()` 配对成功后会等待同一主机的 `_adb-tls-connect` mDNS 服务并自动连接；返回 `null` 表示配对已成功，但在限定时间内未发现连接端口。已知连接端口时可传入 `connectionEndpoint` 跳过发现。仅需配对而不连接时仍可直接调用 `pair()`。
+
+需要让配对界面自动更新时直接监听，不需要自行创建定时器：
+
+```dart
+final subscription = adb.watchMdnsServices().listen((snapshot) {
+  final pairing = snapshot.services.where(
+    (service) => service.type == AdbMdnsServiceType.pairing,
+  );
+  final connect = snapshot.services.where(
+    (service) => service.type == AdbMdnsServiceType.connect,
+  );
+  // 更新“待配对”和“可连接”列表。
+});
+
+await subscription.cancel();
+```
+
+`watchMdnsServices()` 只在后端实现设备发现后产生结果。设备发现不属于当前 Android 主链路的迁移范围；未实现的平台返回空快照。mDNS 只减少 IP 和动态端口输入，配对码和授权仍由 Android 控制。
 
 ### 3.5 取消耗时操作
 
@@ -712,6 +734,7 @@ ValueListenableBuilder<ScrcpyVideoState>(
       enabled: true,
       autofocus: true,
       captureAllKeys: false,
+      blockHostGestures: true,
       gestureEdgeThreshold: 0.02,
       child: ScrcpyVideoView(
         controller: video,
@@ -723,6 +746,8 @@ ValueListenableBuilder<ScrcpyVideoState>(
 ```
 
 输入层必须与视频使用相同的 `fit` 和 alignment，坐标才会正确扣除黑边并映射到设备视频尺寸。虚拟屏 resize/旋转后，应使用最新解码尺寸，不能继续使用旧宽高。
+
+`blockHostGestures` 默认为 `true`。在投屏内上下拖动、触摸或滚轮操作时，输入层会取得手势所有权，外层 `ListView`、页面滑动和宿主手势不会同时触发。如果宿主有意在视频上覆盖自己的导航手势，可以设为 `false`。使用开箱即用的 `ScrcpyView` 或 `ScrcpyGroupView` 时也可直接传入该参数。
 
 桌面鼠标约定与 scrcpy 对齐：
 

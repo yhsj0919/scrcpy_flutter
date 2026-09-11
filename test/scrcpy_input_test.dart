@@ -746,4 +746,50 @@ void main() {
     expect(controller.keys, isEmpty);
     expect(parentEvents, 2);
   });
+
+  testWidgets('input layer can prevent remote drags from scrolling its host', (
+    tester,
+  ) async {
+    final controller = FakeInputController();
+    final scrollController = ScrollController();
+
+    Future<void> pump({required bool blockHostGestures}) => tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: Center(
+          child: SizedBox(
+            width: 300,
+            height: 200,
+            child: SingleChildScrollView(
+              controller: scrollController,
+              child: Column(
+                children: <Widget>[
+                  SizedBox(
+                    height: 180,
+                    child: ScrcpyInputLayer(
+                      controller: controller,
+                      blockHostGestures: blockHostGestures,
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                  const SizedBox(height: 400),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await pump(blockHostGestures: true);
+    await tester.drag(find.byType(ScrcpyInputLayer), const Offset(0, -100));
+    await tester.pumpAndSettle();
+    expect(scrollController.offset, 0);
+    expect(controller.events, isNotEmpty);
+
+    await pump(blockHostGestures: false);
+    await tester.drag(find.byType(ScrcpyInputLayer), const Offset(0, -100));
+    await tester.pumpAndSettle();
+    expect(scrollController.offset, greaterThan(0));
+  });
 }

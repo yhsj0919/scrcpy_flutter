@@ -268,6 +268,7 @@ final class ScrcpyInputLayer extends StatefulWidget {
     this.alignment = Alignment.center,
     this.autofocus = true,
     this.captureAllKeys = false,
+    this.blockHostGestures = true,
     this.gestureEdgeThreshold = 0.02,
     super.key,
   }) : assert(gestureEdgeThreshold >= 0 && gestureEdgeThreshold <= 0.1);
@@ -284,6 +285,13 @@ final class ScrcpyInputLayer extends StatefulWidget {
   /// this input layer owns keyboard focus.
   final bool captureAllKeys;
 
+  /// Claims pointer gestures inside the video so ancestor scrollables and
+  /// gesture detectors do not react to the same remote-device operation.
+  ///
+  /// Disable this when the embedding application intentionally uses gestures
+  /// over the video for its own navigation.
+  final bool blockHostGestures;
+
   /// Snaps mouse presses near a video edge to its first or last physical
   /// pixel so Android gesture navigation can reliably detect edge swipes.
   final double gestureEdgeThreshold;
@@ -298,14 +306,8 @@ class _ScrcpyInputLayerState extends State<ScrcpyInputLayer> {
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) => Focus(
-      autofocus: widget.autofocus,
-      onKeyEvent: widget.enabled
-          ? (_, event) => (_sendKey(event) || widget.captureAllKeys)
-                ? KeyEventResult.handled
-                : KeyEventResult.ignored
-          : null,
-      child: Listener(
+    builder: (context, constraints) {
+      final listener = Listener(
         behavior: HitTestBehavior.opaque,
         onPointerDown: widget.enabled
             ? (event) => _handlePointerDown(event, constraints)
@@ -328,21 +330,54 @@ class _ScrcpyInputLayerState extends State<ScrcpyInputLayer> {
             ? (event) => _send(event, ScrcpyPointerAction.hover, constraints)
             : null,
         onPointerSignal: widget.enabled
-            ? (event) {
-                if (event is PointerScrollEvent) {
-                  _send(
-                    event,
-                    ScrcpyPointerAction.scroll,
-                    constraints,
-                    scrollDelta: event.scrollDelta,
-                  );
-                }
-              }
+            ? (event) => _handlePointerSignal(event, constraints)
             : null,
         child: widget.child,
-      ),
-    ),
+      );
+      final pointerSurface = widget.enabled && widget.blockHostGestures
+          ? RawGestureDetector(
+              behavior: HitTestBehavior.opaque,
+              gestures: <Type, GestureRecognizerFactory>{
+                _HostGestureBlockerRecognizer:
+                    GestureRecognizerFactoryWithHandlers<
+                      _HostGestureBlockerRecognizer
+                    >(_HostGestureBlockerRecognizer.new, (_) {}),
+              },
+              child: listener,
+            )
+          : listener;
+      return Focus(
+        autofocus: widget.autofocus,
+        onKeyEvent: widget.enabled
+            ? (_, event) => (_sendKey(event) || widget.captureAllKeys)
+                  ? KeyEventResult.handled
+                  : KeyEventResult.ignored
+            : null,
+        child: pointerSurface,
+      );
+    },
   );
+
+  void _handlePointerSignal(
+    PointerSignalEvent event,
+    BoxConstraints constraints,
+  ) {
+    if (event is! PointerScrollEvent) return;
+    void send(PointerSignalEvent resolvedEvent) {
+      _send(
+        resolvedEvent,
+        ScrcpyPointerAction.scroll,
+        constraints,
+        scrollDelta: event.scrollDelta,
+      );
+    }
+
+    if (widget.blockHostGestures) {
+      GestureBinding.instance.pointerSignalResolver.register(event, send);
+    } else {
+      send(event);
+    }
+  }
 
   void _handlePointerDown(PointerDownEvent event, BoxConstraints constraints) {
     if (event.kind == PointerDeviceKind.mouse) {
@@ -495,6 +530,27 @@ class _ScrcpyInputLayerState extends State<ScrcpyInputLayer> {
       }),
     );
   }
+}
+
+final class _HostGestureBlockerRecognizer extends OneSequenceGestureRecognizer {
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    startTrackingPointer(event.pointer, event.transform);
+    resolve(GestureDisposition.accepted);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    if (event is PointerUpEvent || event is PointerCancelEvent) {
+      stopTrackingPointer(event.pointer);
+    }
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {}
+
+  @override
+  String get debugDescription => 'scrcpy host gesture blocker';
 }
 
 int? _androidKeyCode(LogicalKeyboardKey key) {

@@ -16,6 +16,7 @@ final class ScrcpyVideoState {
     this.packetsReceived = 0,
     this.framesRendered = 0,
     this.framesPerSecond = 0,
+    this.decoderInputsDropped = 0,
     this.error,
   });
 
@@ -29,6 +30,7 @@ final class ScrcpyVideoState {
       packetsReceived = 0,
       framesRendered = 0,
       framesPerSecond = 0,
+      decoderInputsDropped = 0,
       error = null;
 
   final ScrcpyVideoStatus status;
@@ -40,6 +42,7 @@ final class ScrcpyVideoState {
   final int packetsReceived;
   final int framesRendered;
   final double framesPerSecond;
+  final int decoderInputsDropped;
   final Object? error;
 
   double? get aspectRatio =>

@@ -86,33 +86,36 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         remotePath,
         cancellationToken: cancellationToken,
       );
-      final forwardResult = await _adb.execute(
-        AdbCommand(
-          <String>[
-            '-s',
-            configuration.deviceSerial,
-            'forward',
-            'tcp:0',
-            'localabstract:$socketName',
-          ],
-          sensitiveArgumentIndexes: const <int>{1},
-        ),
-        cancellationToken: cancellationToken,
-      );
-      if (!forwardResult.isSuccess) {
-        throw ScrcpyException(
-          ScrcpyErrorCode.connectionFailure,
-          'Unable to create scrcpy ADB forward',
-          cause: forwardResult.exitCode,
+      var port = 0;
+      {
+        final forwardResult = await _adb.execute(
+          AdbCommand(
+            <String>[
+              '-s',
+              configuration.deviceSerial,
+              'forward',
+              'tcp:0',
+              'localabstract:$socketName',
+            ],
+            sensitiveArgumentIndexes: const <int>{1},
+          ),
+          cancellationToken: cancellationToken,
         );
-      }
-      local = utf8.decode(forwardResult.stdout).trim();
-      final port = int.tryParse(local);
-      if (port == null || port <= 0 || port > 65535) {
-        throw const ScrcpyException(
-          ScrcpyErrorCode.protocolFailure,
-          'ADB returned an invalid dynamic forward port',
-        );
+        if (!forwardResult.isSuccess) {
+          throw ScrcpyException(
+            ScrcpyErrorCode.connectionFailure,
+            'Unable to create scrcpy ADB forward',
+            cause: forwardResult.exitCode,
+          );
+        }
+        local = utf8.decode(forwardResult.stdout).trim();
+        port = int.tryParse(local) ?? 0;
+        if (port <= 0 || port > 65535) {
+          throw const ScrcpyException(
+            ScrcpyErrorCode.protocolFailure,
+            'ADB returned an invalid dynamic forward port',
+          );
+        }
       }
       final video = configuration.video;
       final audioPreparation = await _prepareAndroid11AudioCapture(
@@ -142,6 +145,8 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
         'max_size=${video.maxSize}',
         'max_fps=${video.maxFps}',
         'video_bit_rate=${video.bitRate}',
+        if (video.codecOptions case final options?)
+          'video_codec_options=$options',
         if (configuration.audioEnabled) ...<String>[
           'audio_codec=${configuration.audio.codec.serverName}',
           'audio_bit_rate=${configuration.audio.bitRate}',
@@ -421,6 +426,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
       cause: lastError,
     );
   }
+
 }
 
 final class _SocketPair {
@@ -432,11 +438,13 @@ final class _SocketPair {
 }
 
 final class _ReadySocket {
-  _ReadySocket(this._socket) {
-    _socket.listen(
+  _ReadySocket(Socket socket) : this._(_IoByteTransport(socket));
+
+  _ReadySocket._(this._transport) {
+    _transport.incoming.listen(
       (data) {
         if (!_ready.isCompleted) _ready.complete(true);
-        _chunks.add(Uint8List.fromList(data));
+        _chunks.add(data);
       },
       onError: (Object error, StackTrace stackTrace) {
         if (!_ready.isCompleted) _ready.completeError(error, stackTrace);
@@ -449,18 +457,46 @@ final class _ReadySocket {
     );
   }
 
-  final Socket _socket;
+  final _ByteTransport _transport;
   final Completer<bool> _ready = Completer<bool>();
-  final StreamController<Uint8List> _chunks = StreamController<Uint8List>();
+  final StreamController<Uint8List> _chunks =
+      StreamController<Uint8List>(sync: true);
 
   Future<bool> get ready => _ready.future;
   Stream<Uint8List> get chunks => _chunks.stream;
 
+  Future<void> close() => _transport.close();
+
+  Future<void> write(List<int> data, {bool flush = false}) =>
+      _transport.write(Uint8List.fromList(data), flush: flush);
+}
+
+abstract interface class _ByteTransport {
+  Stream<Uint8List> get incoming;
+
+  Future<void> write(Uint8List data, {bool flush = false});
+
+  Future<void> close();
+}
+
+final class _IoByteTransport implements _ByteTransport {
+  _IoByteTransport(this._socket) {
+    _socket.setOption(SocketOption.tcpNoDelay, true);
+  }
+
+  final Socket _socket;
+
+  @override
+  Stream<Uint8List> get incoming => _socket;
+
+  @override
+  Future<void> write(Uint8List data, {bool flush = false}) async {
+    _socket.add(data);
+    if (flush) await _socket.flush();
+  }
+
+  @override
   Future<void> close() => _socket.close();
-
-  void add(List<int> data) => _socket.add(data);
-
-  Future<void> flush() => _socket.flush();
 }
 
 final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
@@ -556,9 +592,9 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
       Completer<ScrcpyVideoCodecInfo>();
   final Completer<void> _done = Completer<void>();
   final StreamController<ScrcpyVideoPacket> _packetController =
-      StreamController<ScrcpyVideoPacket>();
+      StreamController<ScrcpyVideoPacket>(sync: true);
   final StreamController<ScrcpyVideoCodecInfo> _sessionController =
-      StreamController<ScrcpyVideoCodecInfo>();
+      StreamController<ScrcpyVideoCodecInfo>(sync: true);
   late final ScrcpyVideoPacketParser _parser;
   int _bytesReceived = 0;
   bool _loggedFirstChunk = false;
@@ -575,6 +611,7 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
 
   @override
   final ScrcpyVideoConnectionInfo info;
+
 
   @override
   Future<ScrcpyVideoCodecInfo> get codec => _codec.future;
@@ -635,11 +672,13 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
         serverExit.timeout(const Duration(seconds: 2), onTimeout: () => -1),
       );
     }
-    await _ignoreFailure(
-      _adb
-          .removeForward(_serial, 'tcp:${info.localPort}')
-          .timeout(const Duration(seconds: 2)),
-    );
+    if (info.localPort > 0) {
+      await _ignoreFailure(
+        _adb
+            .removeForward(_serial, 'tcp:${info.localPort}')
+            .timeout(const Duration(seconds: 2)),
+      );
+    }
     await _ignoreFailure(
       _adb
           .shell(_serial, <String>['rm', '-f', info.remoteServerPath])
@@ -760,8 +799,7 @@ final class _IoScrcpyInputController
     final operation = _writes.catchError((Object _) {}).then((_) async {
       if (_closed) return;
       try {
-        _socket.add(bytes);
-        await _socket.flush();
+        await _socket.write(bytes, flush: true);
       } on StateError catch (error) {
         // dart:io reports a closed socket as a StateError. The connection
         // lifecycle reports the disconnect; late UI input is safe to drop.

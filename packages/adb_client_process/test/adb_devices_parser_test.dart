@@ -21,6 +21,28 @@ R58M1234 device product:a model:Pixel_8 device:husky transport_id:1
     expect(devices.last.connectionType, AdbConnectionType.network);
   });
 
+  test('removes an mDNS alias for the same network endpoint', () {
+    final devices = parseAdbDevices('''
+List of devices attached
+192.168.5.44:38715 device product:houji model:M2505W1 device:houji
+adb-demo._adb-tls-connect._tcp device product:houji model:M2505W1 device:houji
+USB123 device product:houji model:M2505W1 device:houji
+''');
+    const services = <AdbMdnsService>[
+      AdbMdnsService(
+        name: 'adb-demo',
+        type: AdbMdnsServiceType.connect,
+        endpoint: AdbEndpoint(host: '192.168.5.44', port: 38715),
+      ),
+    ];
+
+    expect(devices[1].connectionType, AdbConnectionType.network);
+    expect(
+      removeMdnsDeviceAliases(devices, services).map((device) => device.serial),
+      <String>['192.168.5.44:38715', 'USB123'],
+    );
+  });
+
   test('ignores daemon diagnostics and empty lines', () {
     final devices = parseAdbDevices('''
 List of devices attached

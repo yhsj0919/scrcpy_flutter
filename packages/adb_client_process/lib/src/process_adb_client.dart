@@ -165,10 +165,26 @@ final class ProcessAdbClient implements AdbClient {
       );
     }
     try {
-      return parseAdbDevices(
+      final devices = parseAdbDevices(
         utf8.decode(result.stdout),
         observedAt: DateTime.now(),
       );
+      if (!_containsMdnsAlias(devices) ||
+          !devices.any(
+            (device) =>
+                device.connectionType == AdbConnectionType.network &&
+                device.serial.contains(':'),
+          )) {
+        return devices;
+      }
+      try {
+        final services = await discoverMdnsServices(
+          cancellationToken: cancellationToken,
+        );
+        return removeMdnsDeviceAliases(devices, services);
+      } on AdbException {
+        return devices;
+      }
     } on FormatException {
       throw const AdbException(
         AdbErrorCode.invalidResponse,
@@ -176,6 +192,12 @@ final class ProcessAdbClient implements AdbClient {
       );
     }
   }
+
+  static bool _containsMdnsAlias(List<AdbDevice> devices) => devices.any(
+    (device) =>
+        device.serial.endsWith('._adb-tls-connect._tcp') ||
+        device.serial.endsWith('._adb-tls-connect._tcp.'),
+  );
 
   @override
   Future<List<AdbMdnsService>> discoverMdnsServices({
@@ -203,7 +225,6 @@ final class ProcessAdbClient implements AdbClient {
     command: AdbCommand(
       <String>['connect', endpoint.authority],
       timeout: connectionTimeout,
-      sensitiveArgumentIndexes: const <int>{1},
     ),
     isSuccessful: (output) =>
         output.contains('connected to ') ||
@@ -221,7 +242,6 @@ final class ProcessAdbClient implements AdbClient {
     command: AdbCommand(
       <String>['disconnect', endpoint.authority],
       timeout: connectionTimeout,
-      sensitiveArgumentIndexes: const <int>{1},
     ),
     isSuccessful: (output) =>
         output.contains('disconnected ') || output.contains('no such device'),
@@ -240,7 +260,7 @@ final class ProcessAdbClient implements AdbClient {
     command: AdbCommand(
       <String>['pair', endpoint.authority, pairingCode],
       timeout: connectionTimeout,
-      sensitiveArgumentIndexes: const <int>{1, 2},
+      sensitiveArgumentIndexes: const <int>{2},
     ),
     isSuccessful: (output) => output.contains('successfully paired to '),
     errorCode: AdbErrorCode.pairingFailed,
@@ -367,15 +387,36 @@ final class ProcessAdbClient implements AdbClient {
     AdbCancellationToken? cancellationToken,
   }) async {
     final result = await execute(command, cancellationToken: cancellationToken);
-    final output =
+    final rawOutput =
         '${utf8.decode(result.stdout, allowMalformed: true)}\n'
-                '${utf8.decode(result.stderr, allowMalformed: true)}'
-            .toLowerCase();
-    final semanticSuccess = isSuccessful(output);
+        '${utf8.decode(result.stderr, allowMalformed: true)}';
+    final semanticSuccess = isSuccessful(rawOutput.toLowerCase());
     if (!semanticSuccess ||
         (!result.isSuccess && !allowSemanticSuccessOnNonZero)) {
-      throw AdbException(errorCode, errorMessage, exitCode: result.exitCode);
+      final message = _operationErrorMessage(errorMessage, rawOutput, command);
+      stderr.writeln('[adb] $message (exit ${result.exitCode})');
+      throw AdbException(
+        errorCode,
+        message,
+        exitCode: result.exitCode,
+      );
     }
+  }
+
+  static String _operationErrorMessage(
+    String fallback,
+    String output,
+    AdbCommand command,
+  ) {
+    var detail = output.trim();
+    if (detail.isEmpty) return fallback;
+
+    for (final index in command.sensitiveArgumentIndexes) {
+      if (index >= command.arguments.length) continue;
+      final value = command.arguments[index];
+      if (value.isNotEmpty) detail = detail.replaceAll(value, '<redacted>');
+    }
+    return '$fallback: $detail';
   }
 }
 

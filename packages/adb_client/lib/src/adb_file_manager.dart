@@ -35,38 +35,53 @@ final class AdbFileManager {
     AdbCancellationToken? cancellationToken,
   }) async {
     _validateRemotePath(path);
-    final listing = await _shell(
-      'find ${_quote(path)} -mindepth 1 -maxdepth 1 -print0',
-      cancellationToken: cancellationToken,
-    );
+    final listing = await _shell(<String>[
+      'ls',
+      '-A1',
+      path,
+    ], cancellationToken: cancellationToken);
     final paths = utf8
         .decode(listing.stdout, allowMalformed: true)
-        .split('\u0000')
+        .split('\n')
+        .map(
+          (name) =>
+              name.endsWith('\r') ? name.substring(0, name.length - 1) : name,
+        )
         .where((value) => value.isNotEmpty)
-        .toList();
+        .map((name) => path == '/' ? '/$name' : '$path/$name')
+        .toList(growable: false);
     final entries = <AdbFileEntry>[];
-    for (final child in paths) {
-      final result = await _shell(
-        "stat -c '%F|%s|%Y' -- ${_quote(child)}",
-        cancellationToken: cancellationToken,
-      );
-      final fields = utf8
+    for (var offset = 0; offset < paths.length; offset += _statBatchSize) {
+      final end = (offset + _statBatchSize).clamp(0, paths.length);
+      final batch = paths.sublist(offset, end);
+      final result = await _adb.shell(serial, <String>[
+        'stat',
+        '-c',
+        _statFormat,
+        ...batch,
+      ], cancellationToken: cancellationToken);
+      final lines = utf8
           .decode(result.stdout, allowMalformed: true)
-          .trim()
-          .split('|');
-      if (fields.length < 3) continue;
-      final seconds = int.tryParse(fields[2]);
-      entries.add(
-        AdbFileEntry(
-          path: child,
-          name: child.split('/').last,
-          type: _parseType(fields[0]),
-          size: int.tryParse(fields[1]) ?? 0,
-          modifiedAt: seconds == null
-              ? null
-              : DateTime.fromMillisecondsSinceEpoch(seconds * 1000),
-        ),
-      );
+          .split('\n');
+      for (final line in lines) {
+        if (line.isEmpty) continue;
+        final fields = line.split(_statSeparator);
+        if (fields.length < 4) continue;
+        final metadataOffset = fields.length - 3;
+        final child = fields.sublist(0, metadataOffset).join(_statSeparator);
+        final seconds = int.tryParse(fields[metadataOffset + 2].trim());
+        entries.add(
+          AdbFileEntry(
+            path: child,
+            name: child.split('/').last,
+            type: _parseType(fields[metadataOffset]),
+            size: int.tryParse(fields[metadataOffset + 1]) ?? 0,
+            modifiedAt: seconds == null
+                ? null
+                : DateTime.fromMillisecondsSinceEpoch(seconds * 1000),
+          ),
+        );
+      }
     }
     entries.sort((a, b) {
       if (a.type == AdbFileType.directory && b.type != AdbFileType.directory) {
@@ -86,10 +101,11 @@ final class AdbFileManager {
     AdbCancellationToken? cancellationToken,
   }) async {
     _validateRemotePath(path);
-    await _shell(
-      'mkdir ${recursive ? '-p ' : ''}-- ${_quote(path)}',
-      cancellationToken: cancellationToken,
-    );
+    await _shell(<String>[
+      'mkdir',
+      if (recursive) '-p',
+      path,
+    ], cancellationToken: cancellationToken);
   }
 
   Future<void> rename(
@@ -107,10 +123,12 @@ final class AdbFileManager {
         'Destination already exists',
       );
     }
-    await _shell(
-      'mv ${overwrite ? '-f' : '-n'} -- ${_quote(source)} ${_quote(destination)}',
-      cancellationToken: cancellationToken,
-    );
+    await _shell(<String>[
+      'mv',
+      overwrite ? '-f' : '-n',
+      source,
+      destination,
+    ], cancellationToken: cancellationToken);
   }
 
   Future<void> delete(
@@ -122,10 +140,11 @@ final class AdbFileManager {
     if (path == '/') {
       throw ArgumentError.value(path, 'path', 'Refusing to delete root');
     }
-    await _shell(
-      'rm ${recursive ? '-rf' : '-f'} -- ${_quote(path)}',
-      cancellationToken: cancellationToken,
-    );
+    await _shell(<String>[
+      'rm',
+      recursive ? '-rf' : '-f',
+      path,
+    ], cancellationToken: cancellationToken);
   }
 
   Future<bool> exists(
@@ -134,9 +153,9 @@ final class AdbFileManager {
   }) async {
     _validateRemotePath(path);
     final result = await _adb.shell(serial, <String>[
-      'sh',
-      '-c',
-      _quote('test -e ${_quote(path)}'),
+      'test',
+      '-e',
+      path,
     ], cancellationToken: cancellationToken);
     return result.isSuccess;
   }
@@ -178,18 +197,24 @@ final class AdbFileManager {
   }
 
   Future<AdbCommandResult> _shell(
-    String command, {
+    List<String> arguments, {
     AdbCancellationToken? cancellationToken,
   }) async {
-    final result = await _adb.shell(serial, <String>[
-      'sh',
-      '-c',
-      _quote(command),
-    ], cancellationToken: cancellationToken);
+    final result = await _adb.shell(
+      serial,
+      arguments,
+      cancellationToken: cancellationToken,
+    );
     if (!result.isSuccess) {
+      final output = utf8.decode(<int>[
+        ...result.stderr,
+        ...result.stdout,
+      ], allowMalformed: true).trim();
       throw AdbException(
         AdbErrorCode.commandFailed,
-        'Remote file operation failed',
+        output.isEmpty
+            ? 'Remote file operation failed'
+            : 'Remote file operation failed: $output',
         exitCode: result.exitCode,
       );
     }
@@ -216,5 +241,8 @@ final class AdbFileManager {
     }
   }
 
-  static String _quote(String value) => "'${value.replaceAll("'", "'\\''")}'";
+  static const _statBatchSize = 64;
+  static const _statSeparator = '\u001f';
+  static const _statFormat =
+      '%n$_statSeparator%F$_statSeparator%s$_statSeparator%Y';
 }

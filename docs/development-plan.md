@@ -4,6 +4,8 @@
 
 本文件是项目开发进度的唯一逐项事实来源。完成一项就将 `[ ]` 改成 `[x]`，并在对应条目下填写日期、提交/文件、验证结果和必要备注。不得只因“代码已经写完”而勾选，必须满足该项的完成判定。
 
+跨平台适配的逐功能状态统一记录在 `docs/platform-feature-matrix.md`；本文件继续记录阶段和产品功能进度。
+
 ## 使用规则
 
 - `[ ]`：未完成，包含尚未开始、正在实现或尚未通过验证的工作。
@@ -547,6 +549,8 @@
 
 阶段说明：P9 不阻塞 Windows 产品线，也不预先承诺交付。每个平台先完成技术原型和发布约束调查，再决定是否建立正式里程碑。
 
+所有平台开始实现前先执行[跨平台适配基线](platform-adaptation.md)。ADB、协议、视频、音频、输入、Session、嵌入、权限和发行使用同一份验收清单；平台章节只记录后端实现和系统限制。
+
 - [ ] **P9-01 抽离跨平台核心边界**
   - 完成判定：ADB transport、scrcpy 协议、会话模型、控制消息和 Flutter Widget 与 Windows 进程实现解耦，能替换 transport 和视频后端。
   - 验证证据：平台接口文档和至少一个 fake transport 测试。
@@ -558,22 +562,22 @@
   - 完成判定：Android Flutter 宿主能够申请 USB 权限、完成 ADB 握手、执行 shell 并传输文件，不依赖外部 `adb` 可执行文件。
   - 验证证据：至少两种 Android 宿主和两种目标设备的测试报告。
   - 完成日期：
-  - 提交/文件：
-  - 备注：记录 OTG、供电、Hub 和 RSA 密钥安全问题。
+  - 提交/文件：`android/src/main/kotlin/dev/scrcpy/flutter/transport/AndroidUsbAdbTransport.kt`、`AndroidAdbTransport.kt`、`AdbDeviceTransport.kt`
+  - 备注：代码已接入 ADB interface 枚举、USB 权限、bulk 输入输出、RSA 握手、热拔插清理及按 serial 路由；Samsung 宿主连接 Xiaomi 目标设备已验证可用。Xiaomi 连接 Samsung 时可能被厂商换机助手接管或协商成反向 Host/Peripheral 角色，普通应用无法强制交换 USB 数据角色。等待第二组兼容组合完成 shell、文件和投屏验证后勾选；测试需记录线材、OTG 转接方向、供电、Hub、USB 角色和 RSA 密钥安全问题。
 
 - [ ] **P9-03 Android 网络 ADB/配对原型**
   - 完成判定：Android 宿主支持网络连接和 Wireless Debugging 配对，凭据使用平台安全存储。
   - 验证证据：配对、重连、错误码和密钥迁移测试。
   - 完成日期：
   - 提交/文件：
-  - 备注：
+  - 备注：纯 Dart `flutter_adb` 路线因 Android 视频链路延迟与连接可靠性问题已废弃。Android 改用成熟原生实现；设备发现延后，不阻塞投屏主链路。
 
 - [ ] **P9-04 Android scrcpy 视频与控制原型**
   - 完成判定：通过 MediaCodec 显示目标设备画面并完成基础触摸控制，持续运行 30 分钟。
   - 验证证据：`docs/reports/p9-android-host.md`。
   - 完成日期：
   - 提交/文件：
-  - 备注：先单设备，不承诺设备墙。
+  - 备注：旧 Dart ADB、local forward 和逐包 MethodChannel 链路已经移除。Android 默认工厂只进入原生连接器，ADB、scrcpy socket、MediaCodec 与控制生命周期均由 Android 端持有。Android 已按 Session 配置贯通 H.264/H.265/AV1；H.265/AV1 等待真机验证，MP4 直写录屏当前限于 H.264。前台服务、CPU WakeLock 和高性能 Wi-Fi Lock 现在跟随 ADB 连接意图与 Session 生命周期，视频断开不会提前释放；长时间锁屏保持及按保存端点自动恢复已经真机验证通过。
 
 - [ ] **P9-05 iOS/iPadOS 可行性调查**
   - 完成判定：明确网络 ADB、USB 配件访问、后台运行、密钥存储、App Store/企业分发限制，并通过至少一个真机最小原型或给出不可行结论。
@@ -638,6 +642,20 @@
   - 提交/文件：
   - 备注：被控端必须是 Android。
 
+- [ ] **P9-14 Linux 宿主适配**
+  - 完成判定：实现 Linux ADB 后端、mDNS、硬件视频解码、Flutter Texture、音频输出和输入映射，并通过跨平台适配基线的单设备闭环。
+  - 验证证据：`docs/reports/p9-linux-host.md`，记录 X11/Wayland、PipeWire/PulseAudio、udev、GPU 和发行包差异。
+  - 完成日期：
+  - 提交/文件：
+  - 备注：先选择一种可稳定分发的解码后端，再扩充 GPU 与发行格式矩阵。
+
+- [ ] **P9-15 macOS 宿主适配**
+  - 完成判定：实现 macOS ADB 后端、Bonjour、VideoToolbox、Flutter Texture、CoreAudio 和输入映射，并通过跨平台适配基线的单设备闭环。
+  - 验证证据：`docs/reports/p9-macos-host.md`，记录 Apple Silicon/Intel、Retina、多显示器、沙盒、签名和公证结果。
+  - 完成日期：
+  - 提交/文件：
+  - 备注：发行限制和沙盒权限必须在正式多 Session 开发前确认。
+
 ---
 
 ## 后续功能池（尚未排期）
@@ -659,8 +677,6 @@
 - [ ] 日志查看和性能分析。
 - [ ] 相机镜像、游戏手柄、UHID/AOA/OTG 等高级 scrcpy 能力。
 - [ ] 受控任务模板和定时自动化。
-- [ ] Linux 主机支持。
-- [ ] macOS 主机支持。
 - [ ] Windows/Linux/macOS 远程设备网关。
 
 ## 变更/决策日志
@@ -669,6 +685,10 @@
 
 | 日期 | 决策/变更 | 原因 | 影响 |
 | --- | --- | --- | --- |
+| 2026-09-11 | 废弃仓库内 `flutter_adb`，改用平台成熟后端 | Android 的 Dart ADB 与跨 Flutter 视频传输产生高延迟、断链和维护负担 | Android 参考 ScrcpyForAndroid；桌面使用官方 Platform-Tools；Web 后期单独接 WebADB |
+| 2026-09-10 | 淘汰 Kadb 2.1.4 试接入 | 无线配对直接依赖 GPL-3.0 的 spake2-java，且向宿主传递 JitPack、compileSdk 37 和资源打包约束 | 已移除 Kadb、Android 原生 ADB 临时后端和相关构建配置，改用仓库内纯 Dart 协议核心 |
+| 2026-09-10 | 建立跨平台适配基线 | 视频格式、输入状态、音频焦点、重连和资源释放会在多个平台重复出现 | 新平台按统一清单实现和验收；共性问题修入公共层，平台只保留系统差异 |
+| 2026-09-10 | mDNS 作为统一 ADB 标准能力 | 自动发现 Wireless Debugging 的配对与连接动态端口，可显著减少手动输入 | 公共 ADB 层提供一次性发现和自动监听；Windows/Android 等平台实现发现，Web 允许空实现；业务层不判断平台 |
 | 2026-09-02 | 将应用列表/启动、虚拟屏、多应用窗口、动态尺寸和音频前置到设备墙之前 | 这些能力会改变 Session 的显示源、通道和生命周期；先做网格会导致底层返工 | 当时将相关任务统一纳入 P5；2026-09-03 又将设备墙独立为 P6 |
 | 2026-09-03 | 暂缓 Android 10/11/12+ 音频兼容性，直接推进 Windows 播放 | 当前没有这些版本的测试设备，Android 16 协议与原始 Opus 包已验证 | P5-07 保持未勾选，兼容性补验不阻塞 P5-08 开发 |
 | 2026-09-02 | 音频采用聚焦策略且不承诺按虚拟屏/单应用隔离 | scrcpy playback capture 通常是设备级输出，多窗口同时播放会混乱且增加资源占用 | 设备墙默认每台设备只有一个音频焦点，音频失败不得中断视频 |

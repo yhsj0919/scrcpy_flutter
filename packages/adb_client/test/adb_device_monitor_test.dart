@@ -23,6 +23,21 @@ final class _SequenceAdbDevices implements AdbClient {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+final class _SequenceMdnsClient implements AdbClient {
+  _SequenceMdnsClient(this.snapshots);
+
+  final List<List<AdbMdnsService>> snapshots;
+  var calls = 0;
+
+  @override
+  Future<List<AdbMdnsService>> discoverMdnsServices({
+    AdbCancellationToken? cancellationToken,
+  }) async => snapshots[(calls++).clamp(0, snapshots.length - 1)];
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 void main() {
   test('monitor reports add, remove and device state changes', () async {
     const usbUnauthorized = AdbDevice(
@@ -136,4 +151,43 @@ void main() {
     expect(snapshots, hasLength(1));
     expect(snapshots.single.devices, <AdbDevice>[device]);
   });
+
+  test(
+    'watchMdnsServices reports discovery changes and stops on cancel',
+    () async {
+      const pairing = AdbMdnsService(
+        name: 'adb-demo',
+        type: AdbMdnsServiceType.pairing,
+        endpoint: AdbEndpoint(host: '192.168.1.2', port: 37001),
+      );
+      const connect = AdbMdnsService(
+        name: 'adb-demo',
+        type: AdbMdnsServiceType.connect,
+        endpoint: AdbEndpoint(host: '192.168.1.2', port: 38001),
+      );
+      final client = _SequenceMdnsClient(<List<AdbMdnsService>>[
+        const <AdbMdnsService>[pairing],
+        const <AdbMdnsService>[pairing, connect],
+      ]);
+      final snapshots = <AdbMdnsSnapshot>[];
+      final foundConnect = Completer<void>();
+      final subscription = AdbToolkit(client)
+          .watchMdnsServices(interval: const Duration(milliseconds: 10))
+          .listen((snapshot) {
+            snapshots.add(snapshot);
+            if (snapshot.services.length == 2 && !foundConnect.isCompleted) {
+              foundConnect.complete();
+            }
+          });
+
+      await foundConnect.future;
+      await subscription.cancel();
+      final callsAfterCancel = client.calls;
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      expect(snapshots.first.added, const <AdbMdnsService>[pairing]);
+      expect(snapshots.last.added, const <AdbMdnsService>[connect]);
+      expect(client.calls, callsAfterCancel);
+    },
+  );
 }

@@ -52,8 +52,30 @@ AdbDeviceState _parseState(String value) => switch (value) {
 
 AdbConnectionType _connectionType(String serial) {
   if (RegExp(r'^\[[0-9a-fA-F:]+\]:\d+$').hasMatch(serial) ||
-      RegExp(r'^[^:]+:\d+$').hasMatch(serial)) {
+      RegExp(r'^[^:]+:\d+$').hasMatch(serial) ||
+      serial.endsWith('._adb-tls-connect._tcp') ||
+      serial.endsWith('._adb-tls-connect._tcp.')) {
     return AdbConnectionType.network;
   }
   return AdbConnectionType.usb;
+}
+
+List<AdbDevice> removeMdnsDeviceAliases(
+  List<AdbDevice> devices,
+  List<AdbMdnsService> services,
+) {
+  final serials = devices.map((device) => device.serial).toSet();
+  final redundantAliases = <String>{};
+  for (final service in services) {
+    if (service.type != AdbMdnsServiceType.connect ||
+        !serials.contains(service.endpoint.authority)) {
+      continue;
+    }
+    redundantAliases
+      ..add('${service.name}._adb-tls-connect._tcp')
+      ..add('${service.name}._adb-tls-connect._tcp.');
+  }
+  return List.unmodifiable(
+    devices.where((device) => !redundantAliases.contains(device.serial)),
+  );
 }

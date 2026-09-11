@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:adb_client/adb_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,10 +14,18 @@ void main() {
     tester,
   ) async {
     const serial = String.fromEnvironment('SCRCPY_DEVICE_SERIAL');
+    const endpointValue = String.fromEnvironment('ADB_TEST_ENDPOINT');
     if (serial.isEmpty) return;
 
     const channel = MethodChannel('scrcpy_flutter/video');
     final client = createDefaultScrcpyClient();
+    final endpoint = endpointValue.isEmpty
+        ? null
+        : AdbEndpoint.tryParse(endpointValue);
+    if (endpointValue.isNotEmpty && endpoint == null) {
+      throw ArgumentError.value(endpointValue, 'ADB_TEST_ENDPOINT');
+    }
+    if (endpoint != null) await client.adbClient.connect(endpoint);
     final session = client.createSession(
       const ScrcpySessionConfiguration(
         deviceSerial: serial,
@@ -124,6 +133,7 @@ void main() {
       await session.stop();
       video?.dispose();
       session.dispose();
+      if (endpoint != null) await client.adbClient.disconnect(endpoint);
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 }

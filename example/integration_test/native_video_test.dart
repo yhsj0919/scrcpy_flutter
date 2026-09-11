@@ -1,3 +1,4 @@
+import 'package:adb_client/adb_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,6 +12,7 @@ void main() {
     tester,
   ) async {
     const serial = String.fromEnvironment('SCRCPY_DEVICE_SERIAL');
+    const endpointValue = String.fromEnvironment('ADB_TEST_ENDPOINT');
     const iterations = int.fromEnvironment(
       'SCRCPY_STRESS_ITERATIONS',
       defaultValue: 1,
@@ -25,52 +27,67 @@ void main() {
     }
 
     final client = createDefaultScrcpyClient();
+    final endpoint = endpointValue.isEmpty
+        ? null
+        : AdbEndpoint.tryParse(endpointValue);
+    if (endpointValue.isNotEmpty && endpoint == null) {
+      throw ArgumentError.value(endpointValue, 'ADB_TEST_ENDPOINT');
+    }
+    if (endpoint != null) await client.adbClient.connect(endpoint);
     const channel = MethodChannel('scrcpy_flutter/video');
-    for (var iteration = 1; iteration <= iterations; iteration++) {
-      final session = client.createSession(
-        const ScrcpySessionConfiguration(
-          deviceSerial: serial,
-          video: ScrcpyVideoOptions(maxSize: 320, maxFps: 15, bitRate: 1000000),
-          controlEnabled: true,
-        ),
-      );
-      ScrcpyVideoController? controller;
-      try {
-        final connection = await session.start().timeout(
-          const Duration(seconds: 10),
+    try {
+      for (var iteration = 1; iteration <= iterations; iteration++) {
+        final session = client.createSession(
+          const ScrcpySessionConfiguration(
+            deviceSerial: serial,
+            video: ScrcpyVideoOptions(
+              maxSize: 320,
+              maxFps: 15,
+              bitRate: 1000000,
+            ),
+            controlEnabled: true,
+          ),
         );
-        controller = createNativeScrcpyVideoController(connection);
-        await controller.start().timeout(const Duration(seconds: 10));
-        expect(session.state.value, ScrcpySessionState.streaming);
-        expect(controller.value.status, ScrcpyVideoStatus.ready);
-        expect(connection.input, isNotNull);
-        final textureId = controller.value.textureId!;
+        ScrcpyVideoController? controller;
+        try {
+          final connection = await session.start().timeout(
+            const Duration(seconds: 10),
+          );
+          controller = createNativeScrcpyVideoController(connection);
+          await controller.start().timeout(const Duration(seconds: 10));
+          expect(session.state.value, ScrcpySessionState.streaming);
+          expect(controller.value.status, ScrcpyVideoStatus.ready);
+          expect(connection.input, isNotNull);
+          final textureId = controller.value.textureId!;
 
-        await tester.pumpWidget(
-          MaterialApp(home: ScrcpyVideoView(controller: controller)),
-        );
-        final frameCount = await _waitForFrame(tester, channel, textureId);
-        expect(frameCount, greaterThan(0));
-        debugPrint(
-          'native-video: iteration=$iteration/$iterations '
-          'scid=${connection.info.scid} port=${connection.info.localPort} '
-          'frames=$frameCount',
-        );
+          await tester.pumpWidget(
+            MaterialApp(home: ScrcpyVideoView(controller: controller)),
+          );
+          final frameCount = await _waitForFrame(tester, channel, textureId);
+          expect(frameCount, greaterThan(0));
+          debugPrint(
+            'native-video: iteration=$iteration/$iterations '
+            'scid=${connection.info.scid} port=${connection.info.localPort} '
+            'frames=$frameCount',
+          );
 
-        await session.stop().timeout(const Duration(seconds: 10));
-        await controller.stop().timeout(const Duration(seconds: 10));
-        expect(session.state.value, ScrcpySessionState.ready);
-        await expectLater(
-          channel.invokeMethod<int>('frameCount', <String, Object>{
-            'textureId': textureId,
-          }),
-          throwsA(isA<PlatformException>()),
-          reason: 'iteration $iteration must release its native texture',
-        );
-      } finally {
-        controller?.dispose();
-        session.dispose();
+          await session.stop().timeout(const Duration(seconds: 10));
+          await controller.stop().timeout(const Duration(seconds: 10));
+          expect(session.state.value, ScrcpySessionState.ready);
+          await expectLater(
+            channel.invokeMethod<int>('frameCount', <String, Object>{
+              'textureId': textureId,
+            }),
+            throwsA(isA<PlatformException>()),
+            reason: 'iteration $iteration must release its native texture',
+          );
+        } finally {
+          controller?.dispose();
+          session.dispose();
+        }
       }
+    } finally {
+      if (endpoint != null) await client.adbClient.disconnect(endpoint);
     }
   }, timeout: const Timeout(Duration(minutes: 10)));
 }

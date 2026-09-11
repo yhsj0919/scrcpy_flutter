@@ -1,0 +1,58 @@
+plugins {
+    id "com.android.library"
+}
+
+group = "dev.scrcpy.flutter"
+version = "0.0.1"
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+android {
+    namespace = "dev.scrcpy.flutter"
+    compileSdk = 36
+
+    defaultConfig {
+        minSdk = 26
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_static"
+            }
+        }
+    }
+
+    sourceSets {
+        main.assets.srcDir "../windows/third_party/scrcpy"
+        main.java.srcDir "src/main/kotlin"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        prefab = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
+
+}
+
+dependencies {
+    implementation "io.github.vvb2060.ndk:boringssl:20251124"
+    implementation "org.conscrypt:conscrypt-android:2.7.0"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}

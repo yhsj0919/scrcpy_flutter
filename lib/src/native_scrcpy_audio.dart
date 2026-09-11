@@ -57,7 +57,7 @@ final class _NativeScrcpyAudioController extends ChangeNotifier
       if (codec.codec != ScrcpyAudioCodec.opus) {
         throw ScrcpyException(
           ScrcpyErrorCode.unsupportedCapability,
-          'The Windows native audio backend currently supports Opus only; '
+          'The native audio backend currently supports Opus only; '
           'received ${codec.codec.label}',
         );
       }

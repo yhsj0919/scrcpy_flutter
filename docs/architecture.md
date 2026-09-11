@@ -1,12 +1,15 @@
 # 当前架构
 
-更新于 2026-09-02。
+更新于 2026-09-11。
 
 ## 目标与边界
 
 本仓库交付可嵌入其他 Flutter 应用的插件。`example/` 只负责演示、真机验证和集成测试。
 
-- `adb_client` 负责设备连接、发现、应用、文件、状态、批量任务等基础工具箱。
+- ADB 由平台后端提供，不在 Dart 层实现 wire protocol。Android 采用
+  `Miuzarte/ScrcpyForAndroid` 的原生 ADB/TLS 与 scrcpy 链路；桌面平台使用
+  随插件分发的官方 Android SDK Platform-Tools；Web 单独采用 WebADB。
+- `adb_client` 负责统一接口以及设备、应用、文件、状态和批量任务等上层工具箱。
 - `scrcpy_flutter` 单向依赖 ADB 接口，只负责 server、Session、视频、音频、实时控制和虚拟显示。
 - Flutter Demo 组合两个包，但不把 ADB 能力包装成 scrcpy API。
 - 平台原生视频后端负责硬件解码和 Flutter Texture；编码帧不通过 MethodChannel 逐帧复制。
@@ -49,14 +52,20 @@ ScrcpyClient (依赖 AdbClient)
 
 ## ADB 模块
 
-ADB 在同一仓库拆成两个 package：
+ADB 在同一仓库拆成三个明确层次：
 
-- `packages/adb_client`：与后端无关的模型、接口、设备工具箱和错误。
+- `android/third_party/scrcpy_for_android`：Android 宿主传输和媒体链路的
+  Apache-2.0 上游基线及归属文件。
+- `packages/adb_client`：与后端无关的模型、接口、设备工具箱和错误；不实现 wire protocol。
 - `packages/adb_client_process`：桌面进程后端；Windows 默认定位插件内置 ADB。
 
-后续 Android USB Host、HarmonyOS 和 WebUSB 可新增 transport 实现，不改变 scrcpy 会话的上层 API。
+Android 使用原生平台后端；Windows、Linux、macOS 使用官方 platform-tools；
+Web 使用 WebADB/WebUSB transport，不假设浏览器具备 TCP socket。鸿蒙在其
+平台适配阶段选择可用的原生 ADB 后端，不复用 Android 实现细节。
 
-依赖方向固定为 `scrcpy_flutter -> adb_client <- adb_client_process`。ADB 包禁止依赖、部署或调用 scrcpy server；scrcpy 包不公开设备发现、连接、应用、文件、状态和批量操作的代理接口。
+依赖方向固定为 `scrcpy_flutter -> adb_client -> platform backend`。桌面后端为
+`adb_client_process`，Android 后端位于插件原生代码中。ADB 后端禁止依赖
+Flutter UI；公开的 scrcpy Session/View API 不暴露平台传输细节。
 
 ## 输入映射
 
@@ -70,9 +79,11 @@ ADB 在同一仓库拆成两个 package：
 
 ## 平台扩展方向
 
+新增平台必须先逐项执行[跨平台适配基线](platform-adaptation.md)，平台实现只替换 transport、解码、音频、Texture、权限与生命周期后端。已经在其他平台解决的协议、输入和 Session 问题应进入公共层，不能复制成平台补丁。
+
 - Windows：Media Foundation，当前主线。
 - macOS/iOS：评估 VideoToolbox。
-- Android：评估 MediaCodec 与 Surface Texture。
+- Android：移植 ScrcpyForAndroid 的 ADB/scrcpy 生命周期，使用 MediaCodec 与 Surface Texture。
 - Linux：评估 FFmpeg/VA-API 或 GStreamer 原生后端。
 - HarmonyOS：仅作为宿主控制 Android，视频后端单独验证。
 - Web：仅在 WebUSB/WebSocket transport 与 WebCodecs 条件满足时实现。

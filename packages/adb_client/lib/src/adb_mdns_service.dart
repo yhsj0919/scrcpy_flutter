@@ -13,3 +13,7 @@ final class AdbMdnsService {
   final AdbMdnsServiceType type;
   final AdbEndpoint endpoint;
 }
+
+abstract interface class AdbMdnsDiscoveryBackend {
+  Future<List<AdbMdnsService>> discover();
+}

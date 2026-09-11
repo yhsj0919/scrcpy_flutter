@@ -78,9 +78,94 @@ final class AdbToolkit {
   }) =>
       client.pair(endpoint, pairingCode, cancellationToken: cancellationToken);
 
+  /// Pairs a wireless-debugging device and connects to its advertised endpoint.
+  ///
+  /// Android assigns pairing and connection ports independently. When
+  /// [connectionEndpoint] is omitted, the connection endpoint is discovered
+  /// through mDNS on the same host until [discoveryTimeout] expires. A `null`
+  /// result means pairing succeeded but no connection service was discovered.
+  Future<AdbEndpoint?> pairAndConnect(
+    AdbEndpoint pairingEndpoint,
+    String pairingCode, {
+    AdbEndpoint? connectionEndpoint,
+    Duration discoveryTimeout = const Duration(seconds: 10),
+    Duration discoveryInterval = const Duration(milliseconds: 500),
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    _throwIfCancelled(cancellationToken);
+    await pair(
+      pairingEndpoint,
+      pairingCode,
+      cancellationToken: cancellationToken,
+    );
+
+    var endpoint = connectionEndpoint;
+    if (endpoint == null) {
+      final deadline = DateTime.now().add(discoveryTimeout);
+      do {
+        _throwIfCancelled(cancellationToken);
+        try {
+          final services = await discoverMdnsServices(
+            cancellationToken: cancellationToken,
+          );
+          endpoint = _connectionEndpointForHost(services, pairingEndpoint.host);
+        } on AdbException catch (error) {
+          if (error.code == AdbErrorCode.cancelled) rethrow;
+          // Pairing remains successful when mDNS is unavailable.
+          return null;
+        }
+        if (endpoint != null || !DateTime.now().isBefore(deadline)) break;
+        await _delay(discoveryInterval, cancellationToken);
+      } while (true);
+    }
+
+    if (endpoint == null) return null;
+    await connect(endpoint, cancellationToken: cancellationToken);
+    return endpoint;
+  }
+
   Future<List<AdbMdnsService>> discoverMdnsServices({
     AdbCancellationToken? cancellationToken,
   }) => client.discoverMdnsServices(cancellationToken: cancellationToken);
+
+  static AdbEndpoint? _connectionEndpointForHost(
+    List<AdbMdnsService> services,
+    String host,
+  ) {
+    final normalizedHost = host.toLowerCase();
+    for (final service in services.reversed) {
+      if (service.type == AdbMdnsServiceType.connect &&
+          service.endpoint.host.toLowerCase() == normalizedHost) {
+        return service.endpoint;
+      }
+    }
+    return null;
+  }
+
+  static Future<void> _delay(
+    Duration duration,
+    AdbCancellationToken? cancellationToken,
+  ) async {
+    if (duration <= Duration.zero) return;
+    if (cancellationToken == null) {
+      await Future<void>.delayed(duration);
+      return;
+    }
+    await Future.any<void>(<Future<void>>[
+      Future<void>.delayed(duration),
+      cancellationToken.whenCancelled,
+    ]);
+    _throwIfCancelled(cancellationToken);
+  }
+
+  static void _throwIfCancelled(AdbCancellationToken? cancellationToken) {
+    if (cancellationToken?.isCancelled ?? false) {
+      throw const AdbException(
+        AdbErrorCode.cancelled,
+        'ADB operation cancelled',
+      );
+    }
+  }
 
   AdbApplicationManager applications(String serial) =>
       AdbApplicationManager(adbClient: client, serial: serial);
