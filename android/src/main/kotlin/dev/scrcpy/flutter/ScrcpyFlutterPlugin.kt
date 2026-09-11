@@ -7,6 +7,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import dev.scrcpy.flutter.transport.AndroidAdbTransport
+import dev.scrcpy.flutter.transport.AndroidAdbMdnsDiscovery
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -26,6 +27,7 @@ class ScrcpyFlutterPlugin : FlutterPlugin {
     private var ioExecutor: ExecutorService = Executors.newCachedThreadPool()
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var adb: AndroidAdbTransport
+    private lateinit var mdns: AndroidAdbMdnsDiscovery
     private lateinit var scrcpyServerFile: java.io.File
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -35,6 +37,7 @@ class ScrcpyFlutterPlugin : FlutterPlugin {
         applicationContext = binding.applicationContext
         textures = binding.textureRegistry
         adb = AndroidAdbTransport(binding.applicationContext)
+        mdns = AndroidAdbMdnsDiscovery(binding.applicationContext)
         scrcpyServerFile = extractScrcpyServer(binding.applicationContext)
         adbChannel = MethodChannel(binding.binaryMessenger, "scrcpy_flutter/android_adb")
         sessionChannel = MethodChannel(binding.binaryMessenger, "scrcpy_flutter/android_session")
@@ -50,6 +53,7 @@ class ScrcpyFlutterPlugin : FlutterPlugin {
         runCatching { ScrcpySessionService.update(applicationContext, -1) }
         releaseNetworkLocks()
         adb.close()
+        mdns.close()
         ioExecutor.shutdownNow()
     }
 
@@ -373,6 +377,16 @@ class ScrcpyFlutterPlugin : FlutterPlugin {
                             "authorizedDeviceCount" to status.authorizedDeviceCount,
                             "permissionRequestPending" to status.permissionRequestPending,
                             "permissionDenied" to status.permissionDenied,
+                        )
+                    }
+                    "discoverMdnsServices" -> mdns.snapshot(
+                        call.argument<Number>("waitMillis")?.toLong() ?: 0,
+                    ).map { service ->
+                        mapOf(
+                            "name" to service.name,
+                            "type" to service.type,
+                            "host" to service.host,
+                            "port" to service.port,
                         )
                     }
                     "shell" -> adb.shellResult(

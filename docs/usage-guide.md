@@ -116,8 +116,7 @@ final capabilities = client.capabilities;
 
 这属于自定义后端或诊断场景。普通接入不需要先查询全局能力；不支持的编解码器或音频能力会通过结构化错误报告。`ScrcpyCapabilities` 只描述 scrcpy 视频和实时控制能力，设备发现、USB、网络连接和配对仍属于 ADB。
 
-Windows 使用随插件分发的官方 `adb.exe`。Android 将使用插件原生后端，
-不再提供切换到纯 Dart ADB 的运行参数。设备发现功能延后接入。
+Windows 使用随插件分发的官方 `adb.exe`。Android 使用插件原生 ADB、USB Host 和 NSD 后端，不再提供切换到纯 Dart ADB 的运行参数。
 
 ## 3. ADB 基础工具箱
 

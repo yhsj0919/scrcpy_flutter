@@ -16,6 +16,7 @@ final class AndroidNativeAdbClient
         ScrcpyApplicationLabelProvider,
         ScrcpyVideoCapabilitiesProvider {
   static const _channel = MethodChannel('scrcpy_flutter/android_adb');
+  bool _mdnsStarted = false;
 
   @override
   Future<List<AdbDevice>> listDevices({
@@ -203,7 +204,26 @@ final class AndroidNativeAdbClient
     AdbCancellationToken? cancellationToken,
   }) async {
     _throwIfCancelled(cancellationToken);
-    return const <AdbMdnsService>[];
+    final waitMillis = _mdnsStarted ? 0 : 1200;
+    _mdnsStarted = true;
+    final values = await _invokeList(
+      'discoverMdnsServices',
+      AdbErrorCode.commandFailed,
+      <String, Object>{'waitMillis': waitMillis},
+    );
+    _throwIfCancelled(cancellationToken);
+    return <AdbMdnsService>[
+      for (final value in values ?? const <Object?>[])
+        if (value case final Map<Object?, Object?> service)
+          if (_parseMdnsType(service['type'] as String?) case final type?)
+            if (service['host'] case final String host)
+              if (service['port'] case final int port)
+                AdbMdnsService(
+                  name: service['name'] as String? ?? '',
+                  type: type,
+                  endpoint: AdbEndpoint(host: host, port: port),
+                ),
+    ];
   }
 
   @override
@@ -308,6 +328,12 @@ final class AndroidNativeAdbClient
         _ => AdbConnectionType.unknown,
       };
 
+  static AdbMdnsServiceType? _parseMdnsType(String? value) => switch (value) {
+    '_adb-tls-pairing._tcp' => AdbMdnsServiceType.pairing,
+    '_adb-tls-connect._tcp' => AdbMdnsServiceType.connect,
+    _ => null,
+  };
+
   static Future<T?> _invoke<T>(
     String method,
     AdbErrorCode errorCode, [
@@ -325,10 +351,11 @@ final class AndroidNativeAdbClient
 
   static Future<List<Object?>?> _invokeList(
     String method,
-    AdbErrorCode errorCode,
-  ) async {
+    AdbErrorCode errorCode, [
+    Map<String, Object>? arguments,
+  ]) async {
     try {
-      return await _channel.invokeListMethod<Object?>(method);
+      return await _channel.invokeListMethod<Object?>(method, arguments);
     } on PlatformException catch (error) {
       throw AdbException(
         errorCode,

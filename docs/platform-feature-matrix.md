@@ -22,7 +22,7 @@
 | A03 | USB ADB | [x] | [~] | Android USB Host 已接入设备枚举、权限、ADB bulk transport 和热拔插清理，等待 OTG 真机验证。 |
 | A04 | 网络 ADB 连接/断开 | [x] | [x] | 输入 IP 和端口后可连接、断开及恢复连接。 |
 | A05 | Wireless Debugging 验证码配对 | [x] | [x] | 正确验证码成功，错误验证码返回明确错误且不泄漏验证码。 |
-| A06 | mDNS 发现 | [ ] | [ ] | 自动发现 pairing/connect 服务，支持更新、去重和取消。 |
+| A06 | mDNS 发现 | [x] | [~] | Windows 已通过 `adb mdns services` 验证；Android 已接入 NSD pairing/connect 发现、解析、去重和移除，等待真机验证。 |
 | A07 | 设备列表与连接状态 | [x] | [~] | USB/网络设备统一展示；掉线后不会继续显示为可用。 |
 | A08 | ADB shell | [x] | [x] | 支持 UTF-8、错误状态、超时和断线处理。 |
 | A09 | 文件 push/pull | [x] | [~] | 大文件传输、进度、取消和失败清理可用。 |

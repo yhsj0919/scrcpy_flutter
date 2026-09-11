@@ -46,7 +46,7 @@
 
 ## 延后项目
 
-- mDNS 设备发现。
+- Android mDNS 已接入原生 `NsdManager`：并行发现 `_adb-tls-pairing._tcp` 和 `_adb-tls-connect._tcp`，串行解析服务以兼容旧系统限制，并维护新增、端口更新和移除后的解析缓存。公共 `discoverMdnsServices()`、`watchMdnsServices()`、验证码配对及配对后连接端口匹配无需平台分支，等待无线调试真机验证。
 - Android USB Host 已实现：枚举 ADB interface、动态申请 USB 权限、bulk endpoint 输入输出、RSA 授权握手、按 `usb:<deviceId>` 路由 Session，以及拔出设备后的连接清理。USB 与网络设备共用 `AdbDevice` 和按 serial 路由的上层 API，等待 OTG 真机验证。
 - Android USB Host 单向真机验证已通过：Samsung 宿主通过 OTG 连接 Xiaomi 目标设备后，可以完成 USB 权限、ADB 授权和基本操作。反向使用 Xiaomi 宿主连接 Samsung 时，系统可能启动 Samsung 换机助手，或协商为 Samsung Host、Xiaomi Peripheral，因而出现反向连接 Xiaomi ADB 的现象。这属于 USB-C Dual Role 和厂商 USB 策略限制；普通第三方应用只能使用系统已经分配给本机的 Host 角色和 ADB interface，不能可靠强制交换数据角色。
 - Android 原生音频链路已实现，主屏、虚拟屏和设备墙焦点切换待真机验证。
