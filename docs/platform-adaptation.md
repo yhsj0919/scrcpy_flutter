@@ -162,10 +162,10 @@ Android 10/11/12+ 的捕获差异必须分别验证，不能由新版本设备�
 
 | 宿主平台 | ADB | mDNS | 视频 | 音频 | 主要限制 | 当前状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Windows | 官方 platform-tools | `adb mdns services`，延后 | Media Foundation + PixelBuffer Texture | libopus + 系统输出 | D3D11 零拷贝延期 | 主线已实现 |
+| Windows | 官方 platform-tools | `adb mdns services` | Media Foundation + PixelBuffer Texture | libopus + 系统输出 | D3D11 零拷贝延期 | 主线已实现 |
 | Android | 原生网络传输 + USB Host bulk transport | Android NSD，待真机验证 | MediaCodec + SurfaceProducer | 原生 MediaCodec/AudioTrack | 后台限制、OTG 角色与 USB 权限 | 主链路已实现，补充验收中 |
-| Linux | process 或直接 transport | Avahi/内置发现待选 | VA-API/FFmpeg/GStreamer 待验证 | PipeWire/PulseAudio 待验证 | Wayland 输入与 udev | 未开始 |
-| macOS | process 或直接 transport | Bonjour | VideoToolbox | CoreAudio | 沙盒、签名、公证 | 未开始 |
+| Linux | 内置 Platform-Tools/process transport | `adb mdns services` | GStreamer decodebin + RGBA PixelBuffer Texture，待目标机验证 | GStreamer Opus + autoaudiosink，待目标机验证 | GStreamer 插件、Wayland 输入与 udev | ADB、server、H.264 视频和 Opus 音频主链路已接入，待目标机编译 |
+| macOS | 内置 Platform-Tools/process transport | `adb mdns services`，后续可换 Bonjour | VideoToolbox + CVPixelBuffer Texture | AVAudioConverter + AVAudioEngine | 沙盒、签名、公证 | ADB、server、H.264 视频和 Opus 音频主链路已接入，待目标机编译 |
 | iOS/iPadOS | 优先网络 ADB | Bonjour | VideoToolbox | AVAudioEngine | USB 与后台、发行限制 | 仅可行性验证 |
 | HarmonyOS/OpenHarmony | 待选择成熟平台后端 | 延后 | 平台硬解待验证 | 平台音频待验证 | Flutter OHOS、TLS/socket 与 USB 权限 | 未开始 |
 | Web | WebADB/WebUSB 或网关 | Web transport 自身发现或空实现 | WebCodecs | WebAudio | Chromium、安全上下文、后台降频 | 未开始 |

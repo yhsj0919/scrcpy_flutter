@@ -71,7 +71,7 @@
 - 文件管理已完全移除嵌套 `sh -c`、`find`、glob 和管道，统一使用 `ls`、`stat`、`mkdir`、`mv`、`rm`、`test` 的结构化 argv；避免 Android toybox、厂商 shell 与 Windows process ADB 产生不同转义结果。目录只枚举当前一级，符号链接目录和根目录不会被递归进入；远程错误保留具体输出。当前不支持名称中包含换行符的极端文件名。
 - Android 原生连接器创建虚拟屏后会执行配置中的 `launchApplication`，与桌面连接器保持一致；启动失败会关闭整个未完成 Session，避免设备管理页面留下可控制但黑屏的空虚拟显示。
 - 多设备、设备墙及 30 分钟稳定性测试。
-- Wireless Debugging 动态端口自动跟踪。
+- Wireless Debugging 动态端口跟踪已接入公共设备与 Session 状态机：设备监听按 mDNS 服务名识别同一设备，端口变化产生更新事件而不是移除后新增；网络 Session 意外断开后会先解析并连接最新端点，再重建 scrcpy 链路。等待 Android 与 Windows 真机切换端口验证。
 
 ## 锁屏与后台待验证
 

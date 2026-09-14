@@ -57,6 +57,22 @@
 
 server 升级必须同步修改协议 fixture、启动参数、资源文件名、校验值和真机回归基线。
 
+## Android SDK Platform-Tools（Linux 与 macOS）
+
+- 来源：Google 官方 SDK Platform-Tools 37.0.1 固定版本发布包。
+- Linux 包：`platform-tools_r37.0.1-linux.zip`。
+- macOS 包：`platform-tools_r37.0.1-darwin.zip`，包含 x86_64 与 arm64 通用 ADB。
+- 只分发 `adb`、`NOTICE.txt` 和 `source.properties`；`fastboot`、SQLite、文件系统工具及 ADB 不依赖的 `lib64` 均未纳入插件。
+- Linux 构建将 ADB、NOTICE 和 scrcpy server 安装至应用 bundle 的 `lib` 目录，并显式保留 ADB 可执行权限。
+- macOS 通过 CocoaPods resource bundle 分发相同资源，并在签名前的 Pod 准备阶段设置 ADB 可执行权限；运行时不修改已签名应用包。
+
+| 平台 | 文件 | SHA-256 |
+| --- | --- | --- |
+| Linux | `adb` | `A902BE8F45C6C62E76C9EFAF6947A0FA747C9CABD89A2AC8E0D16ECB30B3ED01` |
+| macOS | `adb` | `1811E253B21B12CBFDA7201EBAF86C10E7DDCB5C606A7A81F7C82B4C429C2D3B` |
+
+两个 ADB 二进制均已检查动态依赖：Linux 仅依赖常规系统运行库，macOS 仅依赖系统 Framework 和 `libSystem`。目标平台验收时仍需分别检查可执行权限、USB 发现、mDNS、验证码配对和签名后的进程启动。
+
 ## libopus 1.5.2
 
 - 来源：Xiph.Org 官方发布包 `opus-1.5.2.tar.gz`。

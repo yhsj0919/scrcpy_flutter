@@ -104,8 +104,7 @@ class FakeApplicationLabelClient
     AdbCancellationToken? cancellationToken,
   }) async {
     final output = switch (arguments) {
-      ['pm', 'list', 'packages', ...] =>
-        'package:/data/app/example/base.apk=com.example.app uid:10001 versionCode:1\n',
+      ['pm', 'list', 'packages', ...] => 'package:/data/app/example/base.apk=com.example.app uid:10001 versionCode:1\n',
       ['cmd', 'package', 'query-activities', ...] =>
         'com.example.app/.MainActivity\n',
       _ => '',
@@ -190,16 +189,57 @@ class FakeVideoConnector implements ScrcpyVideoConnector {
 
 class RepeatingVideoConnector implements ScrcpyVideoConnector {
   final connections = <FakeSessionVideoConnection>[];
+  final configurations = <ScrcpySessionConfiguration>[];
 
   @override
   Future<ScrcpyVideoConnection> connect(
     ScrcpySessionConfiguration configuration, {
     AdbCancellationToken? cancellationToken,
   }) async {
+    configurations.add(configuration);
     final connection = FakeSessionVideoConnection();
     connections.add(connection);
     return connection;
   }
+}
+
+class MovingEndpointAdbClient implements AdbClient {
+  String serial = '192.0.2.10:41001';
+  final connected = <AdbEndpoint>[];
+
+  @override
+  Future<List<AdbDevice>> listDevices({
+    AdbCancellationToken? cancellationToken,
+  }) async => <AdbDevice>[
+    AdbDevice(
+      serial: serial,
+      state: AdbDeviceState.device,
+      connectionType: AdbConnectionType.network,
+    ),
+  ];
+
+  @override
+  Future<List<AdbMdnsService>> discoverMdnsServices({
+    AdbCancellationToken? cancellationToken,
+  }) async => const <AdbMdnsService>[
+    AdbMdnsService(
+      name: 'adb-moving',
+      type: AdbMdnsServiceType.connect,
+      endpoint: AdbEndpoint(host: '192.0.2.10', port: 42002),
+    ),
+  ];
+
+  @override
+  Future<void> connect(
+    AdbEndpoint endpoint, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    connected.add(endpoint);
+    serial = endpoint.authority;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class FirstThenFailVideoConnector implements ScrcpyVideoConnector {
@@ -306,6 +346,16 @@ malformed line
     expect(applications.single.launchable, isTrue);
   });
 
+  test('device discovery attaches a stable mDNS identity', () async {
+    final devices = await AdbToolkit(FakeUnifiedDiscoveryAdbClient())
+        .discoverDevices();
+
+    expect(devices, hasLength(2));
+    expect(devices.first.attributes['mdns_service_name'], 'online');
+    expect(devices.last.serial, '192.0.2.20:42002');
+    expect(devices.last.attributes['mdns_service_name'], 'paired');
+  });
+
   test('video options validate quality and encoder selections', () {
     const valid = ScrcpyVideoOptions(
       maxSize: 1280,
@@ -382,6 +432,7 @@ malformed line
     );
 
     expect(client.runtimeInfo?.adbExecutablePath, r'C:\tools\adb.exe');
+    expect(client.runtimeInfo?.usesBundledAdb, isFalse);
     expect(
       client.runtimeInfo?.scrcpyServerPath,
       r'C:\tools\scrcpy-server-v4.1',
@@ -468,6 +519,37 @@ malformed line
       session.dispose();
     },
   );
+
+  test('ScrcpySession follows a changed Wireless Debugging port', () async {
+    final adb = MovingEndpointAdbClient();
+    final connector = RepeatingVideoConnector();
+    final session = ScrcpyRawSession(
+      adbDeviceService: adb,
+      configuration: const ScrcpySessionConfiguration(
+        deviceSerial: '192.0.2.10:41001',
+        reconnectPolicy: ScrcpyReconnectPolicy(
+          maxAttempts: 1,
+          initialDelay: Duration.zero,
+          maxDelay: Duration.zero,
+        ),
+      ),
+      videoConnector: connector,
+    );
+
+    final first = await session.start() as FakeSessionVideoConnection;
+    final replacementFuture = session.reconnectedConnections.first;
+    first.disconnect();
+    await replacementFuture.timeout(const Duration(seconds: 1));
+
+    expect(adb.connected.single.authority, '192.0.2.10:42002');
+    expect(
+      connector.configurations.map((value) => value.deviceSerial),
+      <String>['192.0.2.10:41001', '192.0.2.10:42002'],
+    );
+    expect(session.deviceSerial, '192.0.2.10:42002');
+    await session.stop();
+    session.dispose();
+  });
 
   test(
     'user stop cancels pending reconnect without a duplicate session',

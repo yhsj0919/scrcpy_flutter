@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:adb_client/adb_client.dart';
 import 'package:scrcpy_flutter/scrcpy_advanced.dart';
@@ -320,7 +321,14 @@ class _DeviceDiscoveryPageState extends State<DeviceDiscoveryPage> {
             child: ListTile(
               leading: const Icon(Icons.monitor_heart),
               title: const Text('原生视频后端'),
-              subtitle: const Text('scrcpy 帧协议 · Windows Media Foundation'),
+              subtitle: Text(switch (defaultTargetPlatform) {
+                TargetPlatform.windows =>
+                  'scrcpy 帧协议 · Windows Media Foundation',
+                TargetPlatform.linux => 'scrcpy 帧协议 · GStreamer',
+                TargetPlatform.macOS => 'scrcpy 帧协议 · VideoToolbox',
+                TargetPlatform.android => 'scrcpy 帧协议 · MediaCodec',
+                _ => '当前平台暂未提供原生视频后端',
+              }),
             ),
           ),
           Card(

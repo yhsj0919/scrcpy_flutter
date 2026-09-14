@@ -8,12 +8,14 @@ final class AdbMdnsSnapshot {
     required this.services,
     required this.added,
     required this.removed,
+    this.changed = const <AdbMdnsService>[],
     required this.observedAt,
   });
 
   final List<AdbMdnsService> services;
   final List<AdbMdnsService> added;
   final List<AdbMdnsService> removed;
+  final List<AdbMdnsService> changed;
   final DateTime observedAt;
 }
 
@@ -52,17 +54,26 @@ extension AdbMdnsWatching on AdbToolkit {
           for (final entry in previous.entries)
             if (!current.containsKey(entry.key)) entry.value,
         ];
+        final changed = <AdbMdnsService>[
+          for (final entry in current.entries)
+            if (previous[entry.key] case final oldService?
+                when oldService.endpoint.authority !=
+                    entry.value.endpoint.authority)
+              entry.value,
+        ];
         previous = current;
         if (!emittedInitial ||
             !emitOnlyChanges ||
             added.isNotEmpty ||
-            removed.isNotEmpty) {
+            removed.isNotEmpty ||
+            changed.isNotEmpty) {
           emittedInitial = true;
           controller.add(
             AdbMdnsSnapshot(
               services: List.unmodifiable(current.values),
               added: List.unmodifiable(added),
               removed: List.unmodifiable(removed),
+              changed: List.unmodifiable(changed),
               observedAt: DateTime.now(),
             ),
           );
@@ -89,4 +100,4 @@ extension AdbMdnsWatching on AdbToolkit {
 }
 
 String _serviceKey(AdbMdnsService service) =>
-    '${service.type.name}:${service.name}:${service.endpoint.authority}';
+    '${service.type.name}:${service.name}';

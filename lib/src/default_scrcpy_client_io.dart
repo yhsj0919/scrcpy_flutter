@@ -32,7 +32,7 @@ ScrcpyClient createDefaultScrcpyClient({
   return ScrcpyClient(
     adbClient: adbClient,
     runtimeInfo: ScrcpyRuntimeInfo(
-      usesBundledAdb: true,
+      usesBundledAdb: adbExecutablePath == null,
       adbExecutablePath: (adbClient as ProcessAdbClient).executable,
       scrcpyServerPath:
           scrcpyServerPath ?? resolveBundledScrcpyServerExecutable(),
@@ -44,6 +44,26 @@ ScrcpyClient createDefaultScrcpyClient({
 
 String resolveBundledScrcpyServerExecutable() {
   final applicationExecutable = File(Platform.resolvedExecutable);
-  return '${applicationExecutable.parent.path}${Platform.pathSeparator}'
-      'scrcpy-server-v4.1';
+  final executableDirectory = applicationExecutable.parent;
+  final candidates = switch (Platform.operatingSystem) {
+    'linux' => <String>[
+      '${executableDirectory.path}${Platform.pathSeparator}lib'
+          '${Platform.pathSeparator}scrcpy-server-v4.1',
+    ],
+    'macos' => <String>[
+      '${executableDirectory.parent.path}${Platform.pathSeparator}Resources'
+          '${Platform.pathSeparator}scrcpy_flutter_resources.bundle'
+          '${Platform.pathSeparator}scrcpy-server-v4.1',
+      '${executableDirectory.parent.path}${Platform.pathSeparator}Resources'
+          '${Platform.pathSeparator}scrcpy-server-v4.1',
+    ],
+    _ => <String>[
+      '${executableDirectory.path}${Platform.pathSeparator}'
+          'scrcpy-server-v4.1',
+    ],
+  };
+  for (final candidate in candidates) {
+    if (File(candidate).existsSync()) return candidate;
+  }
+  return candidates.first;
 }

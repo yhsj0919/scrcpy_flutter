@@ -190,4 +190,79 @@ void main() {
       expect(client.calls, callsAfterCancel);
     },
   );
+
+  test(
+    'watchMdnsServices reports a port change without removing the service',
+    () async {
+      const oldEndpoint = AdbMdnsService(
+        name: 'adb-demo',
+        type: AdbMdnsServiceType.connect,
+        endpoint: AdbEndpoint(host: '192.168.1.2', port: 38001),
+      );
+      const newEndpoint = AdbMdnsService(
+        name: 'adb-demo',
+        type: AdbMdnsServiceType.connect,
+        endpoint: AdbEndpoint(host: '192.168.1.2', port: 39001),
+      );
+      final snapshots = <AdbMdnsSnapshot>[];
+      final changed = Completer<void>();
+      final subscription =
+          AdbToolkit(
+                _SequenceMdnsClient(const <List<AdbMdnsService>>[
+                  <AdbMdnsService>[oldEndpoint],
+                  <AdbMdnsService>[newEndpoint],
+                ]),
+              )
+              .watchMdnsServices(interval: const Duration(milliseconds: 10))
+              .listen((snapshot) {
+                snapshots.add(snapshot);
+                if (snapshot.changed.isNotEmpty && !changed.isCompleted) {
+                  changed.complete();
+                }
+              });
+
+      await changed.future;
+      await subscription.cancel();
+
+      expect(snapshots.last.added, isEmpty);
+      expect(snapshots.last.removed, isEmpty);
+      expect(snapshots.last.changed, const <AdbMdnsService>[newEndpoint]);
+    },
+  );
+
+  test(
+    'device monitor treats an mDNS port update as a device change',
+    () async {
+      const oldDevice = AdbDevice(
+        serial: '192.168.1.2:38001',
+        state: AdbDeviceState.paired,
+        connectionType: AdbConnectionType.network,
+        attributes: <String, String>{'mdns_service_name': 'adb-demo'},
+      );
+      const newDevice = AdbDevice(
+        serial: '192.168.1.2:39001',
+        state: AdbDeviceState.paired,
+        connectionType: AdbConnectionType.network,
+        attributes: <String, String>{'mdns_service_name': 'adb-demo'},
+      );
+      final monitor = AdbDeviceMonitor(
+        AdbToolkit(
+          _SequenceAdbDevices(const <List<AdbDevice>>[
+            <AdbDevice>[oldDevice],
+            <AdbDevice>[newDevice],
+          ]),
+        ),
+        interval: const Duration(days: 1),
+      );
+
+      await monitor.start();
+      final update = await monitor.refresh();
+      await monitor.close();
+
+      expect(update.added, isEmpty);
+      expect(update.removed, isEmpty);
+      expect(update.changed, const <AdbDevice>[newDevice]);
+      expect(update.devices, const <AdbDevice>[newDevice]);
+    },
+  );
 }

@@ -23,7 +23,7 @@
 | A04 | 网络 ADB 连接/断开 | [x] | [x] | 输入 IP 和端口后可连接、断开及恢复连接。 |
 | A05 | Wireless Debugging 验证码配对 | [x] | [x] | 正确验证码成功，错误验证码返回明确错误且不泄漏验证码。 |
 | A06 | mDNS 发现 | [x] | [~] | Windows 已通过 `adb mdns services` 验证；Android 已接入 NSD pairing/connect 发现、解析、去重和移除，等待真机验证。 |
-| A07 | 设备列表与连接状态 | [x] | [~] | USB/网络设备统一展示；掉线后不会继续显示为可用。 |
+| A07 | 设备列表与连接状态 | [x] | [~] | USB/网络设备统一展示；mDNS 端口变化按稳定服务身份更新，Session 重连前切换最新端点；掉线后不会继续显示为可用。 |
 | A08 | ADB shell | [x] | [x] | 支持 UTF-8、错误状态、超时和断线处理。 |
 | A09 | 文件 push/pull | [x] | [~] | 大文件传输、进度、取消和失败清理可用。 |
 | A10 | 应用列表、名称和启动 | [x] | [~] | 可取得用户/系统应用、应用名，并在指定显示上启动；Android 原生标签查询待验证。 |
@@ -77,8 +77,8 @@
 
 | 平台 | ADB 方向 | 视频方向 | 音频方向 | 计划状态 | 平台限制 |
 | --- | --- | --- | --- | :---: | --- |
-| Linux | 内置 platform-tools/process transport | FFmpeg/VA-API 或 GStreamer + Texture | PipeWire/PulseAudio | [ ] | Wayland 输入、udev 权限和发行版差异。 |
-| macOS | 内置 platform-tools/process transport | VideoToolbox + Texture | CoreAudio | [ ] | 沙盒、签名、公证和本地网络权限。 |
+| Linux | 内置 Platform-Tools 37.0.1/process transport | GStreamer decodebin + RGBA PixelBuffer Texture | GStreamer Opus + autoaudiosink | [~] | ADB、server、H.264 视频、Opus 音频、截图和 MP4 录屏已接入；Wayland 输入、udev 权限及目标机编译待完成。 |
+| macOS | 内置 Platform-Tools 37.0.1/process transport | VideoToolbox + CVPixelBuffer Texture | AVAudioConverter + AVAudioEngine | [~] | ADB、server、H.264 视频、Opus 音频、截图和 MP4 录屏已接入；签名、公证和目标机编译待完成。 |
 | iOS/iPadOS | 网络 ADB，USB 仅做可行性验证 | VideoToolbox + Texture | AVAudioEngine | [ ] | 后台运行、USB、App Store 发行限制。 |
 | HarmonyOS/OpenHarmony | 复用 ADB 协议控制 Android | 平台硬解 + Flutter OHOS Texture | 平台音频输出 | [ ] | 只做鸿蒙宿主控制 Android；工具链和插件 API 需验证。 |
 | Web | WebADB/WebUSB 或外部网关 | WebCodecs + Canvas/Texture | WebAudio | [ ] | Chromium、安全上下文、USB 权限和后台降频；mDNS 可为空实现。 |

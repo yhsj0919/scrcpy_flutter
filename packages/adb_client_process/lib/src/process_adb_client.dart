@@ -27,6 +27,7 @@ final class ProcessAdbClient implements AdbClient {
   final Map<String, String>? environment;
   final AdbDiagnosticSink? onDiagnostic;
   final Duration connectionTimeout;
+  Future<void>? _preparingExecutable;
 
   @override
   Future<AdbRunningCommand> start(
@@ -36,6 +37,7 @@ final class ProcessAdbClient implements AdbClient {
     if (cancellationToken?.isCancelled ?? false) {
       throw const AdbException(AdbErrorCode.cancelled, 'ADB command cancelled');
     }
+    await _prepareExecutable();
     onDiagnostic?.call('adb.start', <String, Object?>{
       'executable': executable,
       'arguments': command.redactedArguments,
@@ -72,6 +74,7 @@ final class ProcessAdbClient implements AdbClient {
       throw const AdbException(AdbErrorCode.cancelled, 'ADB command cancelled');
     }
 
+    await _prepareExecutable();
     final stopwatch = Stopwatch()..start();
     onDiagnostic?.call('adb.start', <String, Object?>{
       'executable': executable,
@@ -151,6 +154,22 @@ final class ProcessAdbClient implements AdbClient {
     return result;
   }
 
+  Future<void> _prepareExecutable() =>
+      _preparingExecutable ??= _setExecutablePermission();
+
+  Future<void> _setExecutablePermission() async {
+    if (!Platform.isLinux || !executable.startsWith('/')) return;
+    final file = File(executable);
+    if (!await file.exists()) return;
+    final result = await Process.run('/bin/chmod', <String>['755', executable]);
+    if (result.exitCode != 0) {
+      throw const AdbException(
+        AdbErrorCode.startFailed,
+        'Unable to make the bundled adb executable',
+      );
+    }
+  }
+
   @override
   Future<List<AdbDevice>> listDevices({
     AdbCancellationToken? cancellationToken,
@@ -222,10 +241,10 @@ final class ProcessAdbClient implements AdbClient {
     AdbEndpoint endpoint, {
     AdbCancellationToken? cancellationToken,
   }) => _executeAdbOperation(
-    command: AdbCommand(
-      <String>['connect', endpoint.authority],
-      timeout: connectionTimeout,
-    ),
+    command: AdbCommand(<String>[
+      'connect',
+      endpoint.authority,
+    ], timeout: connectionTimeout),
     isSuccessful: (output) =>
         output.contains('connected to ') ||
         output.contains('already connected to '),
@@ -239,10 +258,10 @@ final class ProcessAdbClient implements AdbClient {
     AdbEndpoint endpoint, {
     AdbCancellationToken? cancellationToken,
   }) => _executeAdbOperation(
-    command: AdbCommand(
-      <String>['disconnect', endpoint.authority],
-      timeout: connectionTimeout,
-    ),
+    command: AdbCommand(<String>[
+      'disconnect',
+      endpoint.authority,
+    ], timeout: connectionTimeout),
     isSuccessful: (output) =>
         output.contains('disconnected ') || output.contains('no such device'),
     errorCode: AdbErrorCode.connectionFailed,
@@ -395,11 +414,7 @@ final class ProcessAdbClient implements AdbClient {
         (!result.isSuccess && !allowSemanticSuccessOnNonZero)) {
       final message = _operationErrorMessage(errorMessage, rawOutput, command);
       stderr.writeln('[adb] $message (exit ${result.exitCode})');
-      throw AdbException(
-        errorCode,
-        message,
-        exitCode: result.exitCode,
-      );
+      throw AdbException(errorCode, message, exitCode: result.exitCode);
     }
   }
 
@@ -438,15 +453,34 @@ final class _ProcessAdbRunningCommand implements AdbRunningCommand {
   bool kill() => _process.kill();
 }
 
-/// Resolves the ADB executable placed beside the Windows application by the
-/// Flutter plugin build. Other desktop platforms keep using the conventional
-/// executable name until they gain their own bundled artifact.
+/// Resolves the ADB executable bundled with the desktop application.
 String resolveBundledAdbExecutable({String? applicationExecutablePath}) {
-  if (!Platform.isWindows) return 'adb';
   final applicationExecutable = File(
     applicationExecutablePath ?? Platform.resolvedExecutable,
   );
-  return '${applicationExecutable.parent.path}${Platform.pathSeparator}adb.exe';
+  final executableDirectory = applicationExecutable.parent;
+  final candidates = switch (Platform.operatingSystem) {
+    'windows' => <String>[
+      '${executableDirectory.path}${Platform.pathSeparator}adb.exe',
+    ],
+    'linux' => <String>[
+      '${executableDirectory.path}${Platform.pathSeparator}lib'
+          '${Platform.pathSeparator}adb',
+      '${executableDirectory.path}${Platform.pathSeparator}adb',
+    ],
+    'macos' => <String>[
+      '${executableDirectory.parent.path}${Platform.pathSeparator}Resources'
+          '${Platform.pathSeparator}scrcpy_flutter_resources.bundle'
+          '${Platform.pathSeparator}adb',
+      '${executableDirectory.parent.path}${Platform.pathSeparator}Resources'
+          '${Platform.pathSeparator}adb',
+    ],
+    _ => const <String>[],
+  };
+  for (final candidate in candidates) {
+    if (File(candidate).existsSync()) return candidate;
+  }
+  return Platform.isWindows ? candidates.first : 'adb';
 }
 
 final class _TimeoutSignal {

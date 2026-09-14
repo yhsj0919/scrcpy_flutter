@@ -29,3 +29,7 @@ flutter:
         pluginClass: ScrcpyFlutterPlugin
       windows:
         pluginClass: ScrcpyFlutterPluginCApi
+      linux:
+        pluginClass: ScrcpyFlutterPlugin
+      macos:
+        pluginClass: ScrcpyFlutterPlugin

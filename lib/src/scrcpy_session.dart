@@ -213,6 +213,18 @@ final class ScrcpySessionConfiguration {
   final ScrcpyDisplaySource displaySource;
   final ScrcpyReconnectPolicy reconnectPolicy;
 
+  ScrcpySessionConfiguration withDeviceSerial(String deviceSerial) =>
+      ScrcpySessionConfiguration(
+        deviceSerial: deviceSerial,
+        video: video,
+        controlEnabled: controlEnabled,
+        audioEnabled: audioEnabled,
+        audioRequired: audioRequired,
+        audio: audio,
+        displaySource: displaySource,
+        reconnectPolicy: reconnectPolicy,
+      );
+
   void validate() {
     if (deviceSerial.trim().isEmpty) {
       throw ArgumentError.value(
@@ -280,10 +292,14 @@ final class ScrcpyRawSession extends ChangeNotifier {
   Future<void> _mediaChange = Future<void>.value();
   bool _stopRequested = false;
   bool _disposed = false;
+  late String _deviceSerial = configuration.deviceSerial;
+  String? _mdnsServiceName;
+  bool _hasConnectedOnce = false;
+  bool _networkDevice = false;
 
   ValueListenable<ScrcpySessionState> get state => _state;
 
-  String get deviceSerial => configuration.deviceSerial;
+  String get deviceSerial => _deviceSerial;
   ScrcpyVideoController? get video => _video;
   ScrcpyAudioController? get audio => _audio;
   ScrcpyInputController? get input => _connection?.input;
@@ -333,8 +349,10 @@ final class ScrcpyRawSession extends ChangeNotifier {
         audio = (connection as ScrcpyAudioControllerProvider)
             .createAudioController();
       } else if (stream != null) {
-        audio = createNativeScrcpyAudioController(stream,
-          bitRate: configuration.audio.bitRate);
+        audio = createNativeScrcpyAudioController(
+          stream,
+          bitRate: configuration.audio.bitRate,
+        );
       }
       if (audio != null) {
         try {
@@ -496,6 +514,9 @@ final class ScrcpyRawSession extends ChangeNotifier {
       );
     }
     _stopRequested = false;
+    if (_hasConnectedOnce && _networkDevice) {
+      await _refreshWirelessEndpoint(cancellationToken);
+    }
     await prepare(cancellationToken: cancellationToken);
     if (_disposed) {
       throw const ScrcpyException(
@@ -506,7 +527,7 @@ final class ScrcpyRawSession extends ChangeNotifier {
     _setState(ScrcpySessionState.starting);
     try {
       final connection = await connector.connect(
-        configuration,
+        configuration.withDeviceSerial(_deviceSerial),
         cancellationToken: cancellationToken,
       );
       if (_disposed) {
@@ -517,6 +538,7 @@ final class ScrcpyRawSession extends ChangeNotifier {
         );
       }
       _connection = connection;
+      _hasConnectedOnce = true;
       unawaited(
         connection.done.then(
           (_) => _handleDisconnected(connection),
@@ -645,7 +667,7 @@ final class ScrcpyRawSession extends ChangeNotifier {
         );
       }
       final device = devices.where(
-        (candidate) => candidate.serial == configuration.deviceSerial,
+        (candidate) => candidate.serial == _deviceSerial,
       );
       if (device.isEmpty) {
         throw const ScrcpyException(
@@ -660,10 +682,55 @@ final class ScrcpyRawSession extends ChangeNotifier {
           'Selected device is not ready: ${selectedDevice.state.name}',
         );
       }
+      _networkDevice =
+          selectedDevice.connectionType == AdbConnectionType.network;
+      _mdnsServiceName ??= selectedDevice.attributes['mdns_service_name'];
       _setState(ScrcpySessionState.ready);
     } catch (_) {
       if (!_disposed) _setState(ScrcpySessionState.error);
       rethrow;
+    }
+  }
+
+  Future<void> _refreshWirelessEndpoint(
+    AdbCancellationToken? cancellationToken,
+  ) async {
+    final adb = adbDeviceService;
+    if (adb is! AdbClient) return;
+    final previous = AdbEndpoint.tryParse(_deviceSerial);
+    if (previous == null) return;
+    try {
+      final services = await adb.discoverMdnsServices(
+        cancellationToken: cancellationToken,
+      );
+      final candidates = services.where(
+        (service) => service.type == AdbMdnsServiceType.connect,
+      );
+      AdbMdnsService? selected;
+      final serviceName = _mdnsServiceName;
+      if (serviceName != null) {
+        for (final service in candidates) {
+          if (service.name == serviceName) selected = service;
+        }
+      } else {
+        for (final service in candidates) {
+          if (service.endpoint.host.toLowerCase() ==
+              previous.host.toLowerCase()) {
+            selected = service;
+          }
+        }
+      }
+      if (selected == null) return;
+      _mdnsServiceName = selected.name;
+      final endpoint = selected.endpoint;
+      if (endpoint.authority == previous.authority) return;
+      await adb.connect(
+        endpoint,
+        cancellationToken: cancellationToken,
+      );
+      _deviceSerial = endpoint.authority;
+    } on AdbException catch (error) {
+      if (error.code == AdbErrorCode.cancelled) rethrow;
     }
   }
 

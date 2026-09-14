@@ -110,7 +110,7 @@ final class AdbDeviceMonitor {
     if (_closed) throw StateError('Device monitor has been closed');
     final devices = await toolkit.discoverDevices();
     final current = <String, AdbDevice>{
-      for (final device in devices) device.serial: device,
+      for (final device in devices) _deviceKey(device): device,
     };
     final added = <AdbDevice>[];
     final removed = <AdbDevice>[];
@@ -164,6 +164,7 @@ final class AdbDeviceMonitor {
   }
 
   static bool _sameDevice(AdbDevice a, AdbDevice b) =>
+      a.serial == b.serial &&
       a.state == b.state &&
       a.connectionType == b.connectionType &&
       a.model == b.model &&
@@ -175,5 +176,14 @@ final class AdbDeviceMonitor {
       if (b[entry.key] != entry.value) return false;
     }
     return true;
+  }
+
+  static String _deviceKey(AdbDevice device) {
+    final serviceName = device.attributes['mdns_service_name'];
+    return device.connectionType == AdbConnectionType.network &&
+            serviceName != null &&
+            serviceName.isNotEmpty
+        ? 'mdns:$serviceName'
+        : 'serial:${device.serial}';
   }
 }

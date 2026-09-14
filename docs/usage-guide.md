@@ -207,7 +207,9 @@ final subscription = adb.watchMdnsServices().listen((snapshot) {
 await subscription.cancel();
 ```
 
-`watchMdnsServices()` 只在后端实现设备发现后产生结果。设备发现不属于当前 Android 主链路的迁移范围；未实现的平台返回空快照。mDNS 只减少 IP 和动态端口输入，配对码和授权仍由 Android 控制。
+`watchMdnsServices()` 只在后端实现设备发现后产生结果。Windows 使用内置 ADB，Android 使用系统 NSD；未实现的平台返回空快照。mDNS 只减少 IP 和动态端口输入，配对码和授权仍由 Android 控制。
+
+网络设备以 mDNS 服务名作为稳定身份。无线调试端口变化时，设备监听会把它报告为同一设备的更新；活动 Session 意外断开后，会在重连前解析最新的 `_adb-tls-connect` 端点并建立新连接。业务层不需要保存或替换动态端口。
 
 ### 3.5 取消耗时操作
 

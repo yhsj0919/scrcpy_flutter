@@ -33,16 +33,28 @@ final class AdbToolkit {
       if (error.code == AdbErrorCode.cancelled) rethrow;
       return connected;
     }
-    final entries = <AdbDevice>[...connected];
+    final connectServices = <AdbMdnsService>[
+      for (final service in services)
+        if (service.type == AdbMdnsServiceType.connect) service,
+    ];
+    final serviceByAuthority = <String, AdbMdnsService>{
+      for (final service in connectServices)
+        service.endpoint.authority.toLowerCase(): service,
+    };
+    final entries = <AdbDevice>[
+      for (final device in connected)
+        if (serviceByAuthority[device.serial.toLowerCase()] case final service?)
+          _withMdnsIdentity(device, service.name)
+        else
+          device,
+    ];
     final authorities = connected
         .where((device) => device.connectionType == AdbConnectionType.network)
         .map((device) => device.serial.toLowerCase())
         .toSet();
     final latestByName = <String, AdbMdnsService>{};
-    for (final service in services) {
-      if (service.type == AdbMdnsServiceType.connect) {
-        latestByName[service.name] = service;
-      }
+    for (final service in connectServices) {
+      latestByName[service.name] = service;
     }
     for (final service in latestByName.values) {
       final authority = service.endpoint.authority;
@@ -60,6 +72,22 @@ final class AdbToolkit {
     }
     return List<AdbDevice>.unmodifiable(entries);
   }
+
+  static AdbDevice _withMdnsIdentity(AdbDevice device, String serviceName) =>
+      AdbDevice(
+        serial: device.serial,
+        state: device.state,
+        connectionType: device.connectionType,
+        product: device.product,
+        model: device.model,
+        device: device.device,
+        transportId: device.transportId,
+        lastSeenAt: device.lastSeenAt,
+        attributes: <String, String>{
+          ...device.attributes,
+          'mdns_service_name': serviceName,
+        },
+      );
 
   Future<void> connect(
     AdbEndpoint endpoint, {
