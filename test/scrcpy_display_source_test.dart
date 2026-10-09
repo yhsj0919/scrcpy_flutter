@@ -21,7 +21,7 @@ void main() {
     ]);
   });
 
-  test('virtual display serializes all scrcpy 4.1 display options', () {
+  test('virtual display serializes all scrcpy 5.0.1 display options', () {
     const source = ScrcpyVirtualDisplaySource(
       width: 1280,
       height: 720,

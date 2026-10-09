@@ -19,7 +19,7 @@ Cross-platform ADB and scrcpy session support for Flutter applications.
     'scrcpy_flutter_resources' => [
       'third_party/platform-tools/adb',
       'third_party/platform-tools/NOTICE.txt',
-      'third_party/scrcpy/scrcpy-server-v4.1',
+      'third_party/scrcpy/scrcpy-server-v5.0.1',
       'third_party/scrcpy/LICENSE'
     ]
   }

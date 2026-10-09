@@ -34,7 +34,7 @@ void main() {
     );
   });
 
-  test('serializes the scrcpy 4.1 32-byte touch message', () {
+  test('serializes the scrcpy 5.0.1 32-byte touch message', () {
     final bytes = ScrcpyControlMessageSerializer.pointer(
       const ScrcpyPointerEvent(
         pointerId: 0x1234567887654321,
@@ -108,7 +108,7 @@ void main() {
     ]);
   });
 
-  test('serializes the scrcpy 4.1 scroll message', () {
+  test('serializes the scrcpy 5.0.1 scroll message', () {
     expect(
       ScrcpyControlMessageSerializer.scroll(
         normalizedX: 260 / 1079,
@@ -145,7 +145,7 @@ void main() {
     );
   });
 
-  test('serializes scrcpy 4.1 clipboard control messages', () {
+  test('serializes scrcpy 5.0.1 clipboard control messages', () {
     expect(
       ScrcpyControlMessageSerializer.getClipboard(copyKey: ScrcpyCopyKey.cut),
       <int>[8, 2],
@@ -160,7 +160,7 @@ void main() {
     );
   });
 
-  test('serializes scrcpy 4.1 START_APP control message', () {
+  test('serializes scrcpy 5.0.1 START_APP control message', () {
     expect(
       ScrcpyControlMessageSerializer.startApplication('+com.example.app'),
       <int>[
@@ -194,7 +194,7 @@ void main() {
     );
   });
 
-  test('serializes scrcpy 4.1 RESIZE_DISPLAY control message', () {
+  test('serializes scrcpy 5.0.1 RESIZE_DISPLAY control message', () {
     expect(
       ScrcpyControlMessageSerializer.resizeDisplay(width: 1280, height: 720),
       <int>[21, 0x05, 0x00, 0x02, 0xd0],

@@ -18,7 +18,7 @@
 
 ```text
 内置 adb.exe
-  -> 部署并启动内置 scrcpy-server 4.1
+  -> 部署并启动内置 scrcpy-server 5.0.1
   -> video socket：codec/session/frame metadata + H.264
   -> Dart 协议拆包
   -> Windows Media Foundation 解码
@@ -69,7 +69,7 @@ Flutter UI；公开的 scrcpy Session/View API 不暴露平台传输细节。
 
 ## 输入映射
 
-`ScrcpyInputLayer` 覆盖在 Texture 上，依据 `BoxFit`、Alignment、黑边及裁剪计算归一化视频坐标，再由控制器映射到当前编码尺寸并序列化为 scrcpy 4.1 控制消息。
+`ScrcpyInputLayer` 覆盖在 Texture 上，依据 `BoxFit`、Alignment、黑边及裁剪计算归一化视频坐标，再由控制器映射到当前编码尺寸并序列化为 scrcpy 5.0.1 控制消息。
 
 映射到 Android 的普通按键由视频焦点处理；Ctrl、Alt、Meta 等宿主系统组合键放行。项目不拦截 Windows 全局键或系统音量键。
 

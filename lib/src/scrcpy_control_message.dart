@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'scrcpy_input.dart';
 
-/// scrcpy 4.1 client-to-device control message serializer.
+/// scrcpy 5.0.1 client-to-device control message serializer.
 final class ScrcpyControlMessageSerializer {
   const ScrcpyControlMessageSerializer._();
 
@@ -202,7 +202,7 @@ final class ScrcpyUhidOutputMessage extends ScrcpyDeviceMessage {
   final Uint8List data;
 }
 
-/// Incremental scrcpy 4.1 device-to-client message parser.
+/// Incremental scrcpy 5.0.1 device-to-client message parser.
 final class ScrcpyDeviceMessageParser {
   static const int _clipboard = 0;
   static const int _ackClipboard = 1;

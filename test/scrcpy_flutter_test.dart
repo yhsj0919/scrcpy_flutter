@@ -171,6 +171,38 @@ class FakeUnifiedDiscoveryAdbClient
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+class FakeEncoderAdbClient
+    implements AdbClient, ScrcpyVideoCapabilitiesProvider {
+  var probeCalls = 0;
+
+  @override
+  Future<List<AdbDevice>> listDevices({
+    AdbCancellationToken? cancellationToken,
+  }) async => const <AdbDevice>[
+    AdbDevice(
+      serial: 'test-device',
+      state: AdbDeviceState.device,
+      connectionType: AdbConnectionType.usb,
+    ),
+  ];
+
+  @override
+  Future<String> loadVideoEncoders(
+    String deviceSerial, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    probeCalls++;
+    return '''
+--video-codec=h264 --video-encoder=OMX.rk.video_encoder.avc (hw) [vendor]
+--video-codec=h264 --video-encoder=c2.android.avc.encoder (sw)
+--video-codec=h264 --video-encoder=OMX.google.h264.encoder (sw) (alias for c2.android.avc.encoder)
+''';
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 class FakeVideoConnector implements ScrcpyVideoConnector {
   final connectionCompleter = Completer<ScrcpyVideoConnection>();
   var calls = 0;
@@ -198,6 +230,27 @@ class RepeatingVideoConnector implements ScrcpyVideoConnector {
   }) async {
     configurations.add(configuration);
     final connection = FakeSessionVideoConnection();
+    connections.add(connection);
+    return connection;
+  }
+}
+
+class EncoderFallbackVideoConnector implements ScrcpyVideoConnector {
+  EncoderFallbackVideoConnector(this.succeeds);
+
+  final bool Function(ScrcpyVideoOptions video) succeeds;
+  final configurations = <ScrcpySessionConfiguration>[];
+  final connections = <FakeSessionVideoConnection>[];
+
+  @override
+  Future<ScrcpyVideoConnection> connect(
+    ScrcpySessionConfiguration configuration, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    configurations.add(configuration);
+    final connection = succeeds(configuration.video)
+        ? FakeSessionVideoConnection()
+        : EncoderFailureConnection();
     connections.add(connection);
     return connection;
   }
@@ -319,6 +372,17 @@ class FakeSessionVideoConnection implements ScrcpyVideoConnection {
   }
 }
 
+class EncoderFailureConnection extends FakeSessionVideoConnection {
+  @override
+  Future<ScrcpyVideoCodecInfo> get codec => Future.error(
+    const ScrcpyException(
+      ScrcpyErrorCode.protocolFailure,
+      'scrcpy video socket closed before codec metadata',
+      cause: 'MediaCodec.CodecException: Capture/encoding error',
+    ),
+  );
+}
+
 void main() {
   test('parses localized application labels from scrcpy output', () {
     final labels = ScrcpyClient.parseScrcpyApplicationLabels('''
@@ -381,6 +445,152 @@ malformed line
     );
   });
 
+  test(
+    'session tries the declared hardware encoder before software H.264',
+    () async {
+      final adb = FakeEncoderAdbClient();
+      final connector = EncoderFallbackVideoConnector(
+        (video) =>
+            video.encoder == 'c2.android.avc.encoder' && !video.lowLatency,
+      );
+      final session = ScrcpyClient(adbClient: adb, videoConnector: connector)
+          .createSession(
+            const ScrcpySessionConfiguration(deviceSerial: 'test-device'),
+          );
+
+      final elapsed = Stopwatch()..start();
+      await session.start();
+      elapsed.stop();
+
+      expect(adb.probeCalls, 1);
+      expect(
+        connector.configurations
+            .map(
+              (configuration) =>
+                  (configuration.video.encoder, configuration.video.lowLatency),
+            )
+            .toList(),
+        <(String?, bool)>[
+          ('OMX.rk.video_encoder.avc', true),
+          ('OMX.rk.video_encoder.avc', false),
+          ('c2.android.avc.encoder', true),
+          ('c2.android.avc.encoder', false),
+        ],
+      );
+      expect(
+        connector.connections
+            .take(3)
+            .every((connection) => connection.closeCalls == 1),
+        isTrue,
+      );
+      expect(
+        elapsed.elapsed,
+        greaterThanOrEqualTo(const Duration(milliseconds: 1500)),
+      );
+      await session.stop();
+      session.dispose();
+    },
+  );
+
+  test('explicit encoder only retries without low latency', () async {
+    final adb = FakeEncoderAdbClient();
+    final connector = EncoderFallbackVideoConnector(
+      (video) => video.encoder == 'chosen.encoder' && !video.lowLatency,
+    );
+    final session = ScrcpyClient(adbClient: adb, videoConnector: connector)
+        .createSession(
+          const ScrcpySessionConfiguration(
+            deviceSerial: 'test-device',
+            video: ScrcpyVideoOptions(encoder: 'chosen.encoder'),
+          ),
+        );
+
+    await session.start();
+
+    expect(adb.probeCalls, 0);
+    expect(
+      connector.configurations.map(
+        (configuration) => configuration.video.lowLatency,
+      ),
+      <bool>[true, false],
+    );
+    await session.stop();
+    session.dispose();
+  });
+
+  test(
+    'session uses automatic selection when encoder probing is unavailable',
+    () async {
+      final connector = EncoderFallbackVideoConnector(
+        (video) => video.encoder == null && !video.lowLatency,
+      );
+      final session =
+          ScrcpyClient(
+            adbClient: FakeAdbClient(),
+            videoConnector: connector,
+          ).createSession(
+            const ScrcpySessionConfiguration(deviceSerial: 'test-device'),
+          );
+
+      await session.start();
+
+      expect(
+        connector.configurations
+            .map(
+              (configuration) =>
+                  (configuration.video.encoder, configuration.video.lowLatency),
+            )
+            .toList(),
+        <(String?, bool)>[(null, true), (null, false)],
+      );
+      expect(connector.connections.first.closeCalls, 1);
+      await session.stop();
+      session.dispose();
+    },
+  );
+
+  test(
+    'encoder fallback reports attempted encoders and the server error',
+    () async {
+      final connector = EncoderFallbackVideoConnector((_) => false);
+      final session =
+          ScrcpyClient(
+            adbClient: FakeEncoderAdbClient(),
+            videoConnector: connector,
+          ).createSession(
+            const ScrcpySessionConfiguration(deviceSerial: 'test-device'),
+          );
+
+      await expectLater(
+        session.start(),
+        throwsA(
+          isA<ScrcpyException>()
+              .having(
+                (error) => error.message,
+                'message',
+                allOf(
+                  contains('OMX.rk.video_encoder.avc'),
+                  contains('c2.android.avc.encoder'),
+                  contains('OMX.google.h264.encoder'),
+                ),
+              )
+              .having(
+                (error) => error.cause.toString(),
+                'cause',
+                contains('Capture/encoding error'),
+              ),
+        ),
+      );
+
+      expect(connector.configurations, hasLength(6));
+      expect(
+        connector.connections.every((connection) => connection.closeCalls == 1),
+        isTrue,
+      );
+      session.dispose();
+    },
+  );
+
   test('ScrcpySession prepares through a fake ADB device service', () async {
     final adb = FakeAdbClient();
     final client = ScrcpyClient(adbClient: adb);
@@ -428,14 +638,14 @@ malformed line
 
     final client = createDefaultScrcpyClient(
       adbExecutablePath: r'C:\tools\adb.exe',
-      scrcpyServerPath: r'C:\tools\scrcpy-server-v4.1',
+      scrcpyServerPath: r'C:\tools\scrcpy-server-v5.0.1',
     );
 
     expect(client.runtimeInfo?.adbExecutablePath, r'C:\tools\adb.exe');
     expect(client.runtimeInfo?.usesBundledAdb, isFalse);
     expect(
       client.runtimeInfo?.scrcpyServerPath,
-      r'C:\tools\scrcpy-server-v4.1',
+      r'C:\tools\scrcpy-server-v5.0.1',
     );
   });
 

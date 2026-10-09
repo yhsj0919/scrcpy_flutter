@@ -485,9 +485,9 @@ class ScrcpyFlutterPlugin : FlutterPlugin {
     }
 
     private fun extractScrcpyServer(context: android.content.Context): java.io.File {
-        val target = java.io.File(context.codeCacheDir, "scrcpy-server-v4.1")
+        val target = java.io.File(context.codeCacheDir, "scrcpy-server-v5.0.1")
         if (!target.isFile || sha256(target) != SCRCPY_SERVER_SHA256) {
-            context.assets.open("scrcpy-server-v4.1").use { input ->
+            context.assets.open("scrcpy-server-v5.0.1").use { input ->
                 val temporary = java.io.File(target.parentFile, "${target.name}.partial")
                 try {
                     temporary.outputStream().use(input::copyTo)
@@ -559,7 +559,7 @@ class ScrcpyFlutterPlugin : FlutterPlugin {
             adb.shell(
                 serial,
                 "CLASSPATH=${shellQuote(remote)} app_process / " +
-                    "com.genymobile.scrcpy.Server 4.1 $argument cleanup=true",
+                    "com.genymobile.scrcpy.Server 5.0.1 $argument cleanup=true",
             )
         } finally {
             runCatching { adb.shell(serial, "rm -f ${shellQuote(remote)}") }
@@ -577,6 +577,6 @@ class ScrcpyFlutterPlugin : FlutterPlugin {
     private companion object {
         const val TAG = "ScrcpyFlutterPlugin"
         const val SCRCPY_SERVER_SHA256 =
-            "deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae"
+            "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536"
     }
 }

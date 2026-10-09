@@ -99,7 +99,7 @@ Windows 构建默认随插件分发固定版本的 ADB、其运行库和匹配�
 ```dart
 final scrcpy = createDefaultScrcpyManager(
   adbExecutablePath: r'C:\managed-tools\adb.exe',
-  scrcpyServerPath: r'C:\managed-tools\scrcpy-server-v4.1',
+  scrcpyServerPath: r'C:\managed-tools\scrcpy-server-v5.0.1',
 );
 ```
 
@@ -502,8 +502,13 @@ final connection = await session.start();
 | `bitRate` | 8 Mbps | 目标视频码率 |
 | `codec` | H.264 | H.264、H.265 或 AV1 请求 |
 | `encoder` | null | 指定 Android MediaCodec 编码器；空值由 scrcpy 选择 |
+| `lowLatency` | true | 请求低延迟 codec options；部分厂商编码器不兼容 |
 
 虽然协议层能表达 H.265/AV1，当前 Windows 原生 Flutter Texture 解码链路以 H.264 为已实现、已验证路径。接入前可调用编码能力探测，不要仅依据设备宣称的 codec 决定桌面端是否可播。
+
+编码器列表只表示设备声明支持。H.264 默认连接会优先实际启动首个非别名硬件编码器，失败后依次尝试首个非别名软件编码器和首个软件别名；能力探测不可用时才交给系统自动选择。每次 codec metadata 返回前出现明确的 MediaCodec/Capture 编码失败，都会完整关闭失败 Session，并等待 500 毫秒再启动下一个候选。全部失败时错误保留尝试名称及最后一份 server 日志。显式设置 `encoder` 时只对该编码器关闭 `lowLatency` 重试，不切换其他编码器。
+
+设备墙示例默认使用 `maxSize: 720`、`maxFps: 20`、`bitRate: 1 Mbps`、`lowLatency: false`，用于兼容厂商硬件编码器并降低多设备同时编码和组网传输压力；普通 Session 的公开默认值保持不变。
 
 修改这些启动参数需要重新建立 scrcpy 会话。当前没有无缝运行时切换码率、帧率和 codec 的公开能力。
 
@@ -690,7 +695,7 @@ final session = scrcpy.createSession(
 音频源：
 
 - `automatic`：Android 12 及以上使用 `playback`，Android 11 或 SDK 未知时使用 `output`；
-- `output`：系统输出捕获，Android 11 兼容路径可能触发系统确认弹窗；
+- `output`：系统输出捕获，主要用于 Android 11 兼容；
 - `playback`：Android Playback Capture；
 - `duplicateOnDevice`：仅适用于 `playback`，允许设备端同时发声。
 
@@ -989,7 +994,7 @@ await group.setMuted(true);
 
 仍需集中验证或继续开发的项目：
 
-- Android 11 开发板的音频确认弹窗、`output` 捕获和真实播放；
+- Android 11 开发板无堆转储弹窗时的 `output` 捕获、失败降级和真实播放；
 - USB 掉线、设备重启、多个虚拟屏并存后的重连稳定性；
 - 触摸广播在主屏/虚拟屏、旋转、缩放和边缘手势下的真实设备验证；
 - 长时间多会话播放的内存、句柄、CPU/GPU 和音画连续性；

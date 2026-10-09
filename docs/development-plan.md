@@ -23,7 +23,8 @@
 - 下一项：P7-01 资源指标、时间序列和诊断导出已完成。P7-05 的 D3D11 外部纹理实验在当前 Flutter Windows 渲染器上出现 `Binding D3D surface failed` 和界面无响应，已完整撤回，稳定版继续使用 Media Foundation NV12 + 原生线程 RGBA 转换 + PixelBuffer Texture；零拷贝按用户决定延期。下一步转入各平台适配。P6-05 批量控制、P6-06 触摸广播及所有长时间项目继续等待集中真机验收；P5 Android 11 音频和切换爆音仍保留待测。
 - 验证策略：所有 30 分钟及以上的长时间稳定性/压力测试统一延期，由用户后续集中执行；当前开发以自动化测试和基本功能人工验证为完成依据。
 - 当前阻塞：Android 11 开发板音频兼容待用户稍后真机复验；真实批量安装/卸载仍等待专用测试 APK 做补充真机验收。两项均不阻塞当前设备墙功能开发。
-- 已选基线：Windows、scrcpy 4.1、平台原生解码、网络/USB ADB、H.264；P5 增加 Opus 音频与虚拟显示。
+- 已选基线：Windows、scrcpy 5.0.1、平台原生解码、网络/USB ADB、H.264；P5 增加 Opus 音频与虚拟显示。
+- 2026-10-09：四个平台内置 server 升至 5.0.1，同步启动版本、资源路径和 SHA-256。上游 4.1→5.0.1 控制/帧协议和 Options 未变；115 项测试及静态分析通过。真机画面、音频、虚拟屏、重连待用户回归；客户端 GPU 纹理链路仍按原计划延期。
 - 当前功能闭环：USB/网络/配对码连接，实时画面，画质配置，scrcpy 基础控制、模拟触摸、剪贴板、设备管理、安全批量包操作，以及 Android 16 Opus 编码音频传输。
 - 交付形态：从 P0 起按可嵌入 Flutter 插件实现；example 只消费插件公开 API，不承载核心逻辑。
 - 已完成增强：设备详情、文件管理、设备/应用 CPU/内存/GPU 状态，以及安装/卸载等批量 ADB 操作。
@@ -392,7 +393,7 @@
   - 验证证据：协议分包、断流、音频不可用、Android 10/11/12+ 行为测试和真机原始包记录。
   - 完成日期：
   - 提交/文件：`lib/src/scrcpy_audio_packet.dart`、`lib/src/scrcpy_video_connection*.dart`、`lib/src/scrcpy_session.dart`、`test/scrcpy_audio_packet_test.dart`、`example/integration_test/audio_transport_test.dart`、`docs/reports/p5-audio-transport.md`
-  - 备注：首版优先 Opus；已实现独立 audio socket、codec/config/packet/PTS 解析、可选降级和 require-audio 清理语义。Xiaomi Android 16 真机取得 Opus 原始包并通过验收。Rockchip Android 11 开发板已确认解锁且具备 Opus 编码器，但厂商 ROM 的 shell 前台判定仍使捕获失败；连接器已增加 API 30 专用 HeapDumpActivity 前台准备和精确弹窗关闭。主画面/设备墙自动在 Android 11 选择 `output`、Android 12+ 选择 `playback`，等待用户稍后用开发板复验。Android 10/12+ 仍待补验，因此暂不勾选。
+  - 备注：首版优先 Opus；已实现独立 audio socket、codec/config/packet/PTS 解析、可选降级和 require-audio 清理语义。Xiaomi Android 16 真机取得 Opus 原始包并通过验收。Rockchip Android 11 开发板已确认解锁且具备 Opus 编码器，但厂商 ROM 的 shell 前台判定仍使捕获失败。已移除会打开系统堆转储页面的前台绕行；主画面/设备墙自动在 Android 11 选择 `output`、Android 12+ 选择 `playback`，不支持时按现有音频降级流程处理。Android 10/11/12+ 仍待补验，因此暂不勾选。
 
 - [ ] **P5-08 Windows 音频解码、播放与焦点**
   - 完成判定：Windows 低延迟播放设备音频，支持静音、音量、缓冲和延迟统计；多个窗口同时存在时默认只播放聚焦窗口，切换无明显爆音或资源泄漏。

@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 void main() {
-  test('parses scrcpy 4.1 video encoder listing', () {
+  test('parses scrcpy 5.0.1 video encoder listing', () {
     const output = '''
 [server] INFO: List of video encoders:
     --video-codec=h264 --video-encoder=c2.rk.avc.encoder (hw) [vendor]

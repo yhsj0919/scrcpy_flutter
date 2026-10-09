@@ -52,7 +52,7 @@ final class ScrcpyClient {
   }) => ScrcpyRawSession(
     adbDeviceService: adbClient,
     configuration: configuration,
-    videoConnector: _videoConnectorOrNull(),
+    videoConnector: _fallbackVideoConnectorOrNull(),
     id: id,
   );
 
@@ -95,7 +95,7 @@ final class ScrcpyClient {
         'app_process',
         '/',
         'com.genymobile.scrcpy.Server',
-        runtimeInfo?.scrcpyServerVersion ?? '4.1',
+        runtimeInfo?.scrcpyServerVersion ?? '5.0.1',
         'list_apps=true',
         'cleanup=true',
       ], cancellationToken: cancellationToken);
@@ -139,13 +139,14 @@ final class ScrcpyClient {
   ) {
     final labels = parseScrcpyApplicationLabels(output);
     if (labels.isEmpty) return applications;
-    final enriched = <AdbApplication>[
-      for (final application in applications)
-        application.copyWith(name: labels[application.packageName]),
-    ]..sort((a, b) {
-      final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      return byName != 0 ? byName : a.packageName.compareTo(b.packageName);
-    });
+    final enriched =
+        <AdbApplication>[
+          for (final application in applications)
+            application.copyWith(name: labels[application.packageName]),
+        ]..sort((a, b) {
+          final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          return byName != 0 ? byName : a.packageName.compareTo(b.packageName);
+        });
     return List<AdbApplication>.unmodifiable(enriched);
   }
 
@@ -188,7 +189,7 @@ final class ScrcpyClient {
         'app_process',
         '/',
         'com.genymobile.scrcpy.Server',
-        runtimeInfo?.scrcpyServerVersion ?? '4.1',
+        runtimeInfo?.scrcpyServerVersion ?? '5.0.1',
         'list_encoders=true',
         'cleanup=true',
       ], cancellationToken: cancellationToken);
@@ -221,7 +222,7 @@ final class ScrcpyClient {
   }
 
   ScrcpyVideoConnector createVideoConnector() {
-    final connector = _videoConnectorOrNull();
+    final connector = _fallbackVideoConnectorOrNull();
     if (connector == null) {
       throw const ScrcpyException(
         ScrcpyErrorCode.unsupportedCapability,
@@ -229,6 +230,16 @@ final class ScrcpyClient {
       );
     }
     return connector;
+  }
+
+  ScrcpyVideoConnector? _fallbackVideoConnectorOrNull() {
+    final connector = _videoConnectorOrNull();
+    if (connector == null) return null;
+    return _ScrcpyVideoFallbackConnector(
+      connector,
+      (serial, cancellationToken) =>
+          probeVideoCapabilities(serial, cancellationToken: cancellationToken),
+    );
   }
 
   ScrcpyVideoConnector? _videoConnectorOrNull() {
@@ -241,6 +252,151 @@ final class ScrcpyClient {
       expectedServerSha256: runtimeInfo?.scrcpyServerSha256,
     );
   }
+}
+
+final class _ScrcpyVideoFallbackConnector implements ScrcpyVideoConnector {
+  const _ScrcpyVideoFallbackConnector(this._delegate, this._probe);
+
+  final ScrcpyVideoConnector _delegate;
+  final Future<ScrcpyVideoCapabilities> Function(
+    String deviceSerial,
+    AdbCancellationToken? cancellationToken,
+  )
+  _probe;
+
+  @override
+  Future<ScrcpyVideoConnection> connect(
+    ScrcpySessionConfiguration configuration, {
+    AdbCancellationToken? cancellationToken,
+  }) async {
+    final video = configuration.video;
+    if (video.codec != ScrcpyVideoCodec.h264) {
+      return _delegate.connect(
+        configuration,
+        cancellationToken: cancellationToken,
+      );
+    }
+
+    final attempts = <({String? encoder, bool lowLatency})>[];
+    if (video.encoder case final encoder?) {
+      attempts.add((encoder: encoder, lowLatency: video.lowLatency));
+      if (video.lowLatency) {
+        attempts.add((encoder: encoder, lowLatency: false));
+      }
+    } else {
+      try {
+        final capabilities = await _probe(
+          configuration.deviceSerial,
+          cancellationToken,
+        );
+        ScrcpyVideoEncoder? hardware;
+        ScrcpyVideoEncoder? software;
+        ScrcpyVideoEncoder? softwareAlias;
+        for (final encoder in capabilities.forCodec(
+          ScrcpyVideoCodec.h264,
+          includeAliases: true,
+        )) {
+          if (encoder.isAlias) {
+            if (!encoder.hardware) softwareAlias ??= encoder;
+          } else if (encoder.hardware) {
+            hardware ??= encoder;
+          } else {
+            software ??= encoder;
+          }
+        }
+        for (final encoder in <ScrcpyVideoEncoder?>[
+          hardware,
+          software,
+          softwareAlias,
+        ].nonNulls) {
+          attempts.add((encoder: encoder.name, lowLatency: video.lowLatency));
+          if (video.lowLatency) {
+            attempts.add((encoder: encoder.name, lowLatency: false));
+          }
+        }
+      } catch (_) {
+        if (cancellationToken?.isCancelled ?? false) {
+          throw const ScrcpyException(
+            ScrcpyErrorCode.cancelled,
+            'scrcpy connection cancelled',
+          );
+        }
+      }
+      if (attempts.isEmpty) {
+        attempts.add((encoder: null, lowLatency: video.lowLatency));
+        if (video.lowLatency) {
+          attempts.add((encoder: null, lowLatency: false));
+        }
+      }
+    }
+    Object? lastError;
+    for (var index = 0; index < attempts.length; index++) {
+      if (cancellationToken?.isCancelled ?? false) {
+        throw const ScrcpyException(
+          ScrcpyErrorCode.cancelled,
+          'scrcpy connection cancelled',
+        );
+      }
+      final attempt = attempts[index];
+      ScrcpyVideoConnection? connection;
+      try {
+        connection = await _delegate.connect(
+          _withVideo(
+            configuration,
+            encoder: attempt.encoder,
+            lowLatency: attempt.lowLatency,
+          ),
+          cancellationToken: cancellationToken,
+        );
+        await connection.codec.timeout(const Duration(seconds: 5));
+        return connection;
+      } catch (error) {
+        await connection?.close();
+        if (!_isEncoderStartupFailure(error)) rethrow;
+        lastError = error;
+        if (index + 1 < attempts.length) {
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+        }
+      }
+    }
+    throw ScrcpyException(
+      ScrcpyErrorCode.videoFailure,
+      'Unable to start an H.264 encoder after trying ${attempts.map(_attemptName).join(', ')}',
+      cause: lastError,
+    );
+  }
+
+  static String _attemptName(({String? encoder, bool lowLatency}) attempt) =>
+      '${attempt.encoder ?? 'automatic'}${attempt.lowLatency ? '' : ' without low latency'}';
+
+  static bool _isEncoderStartupFailure(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('capture/encoding error') ||
+        text.contains('mediacodec') ||
+        text.contains('before codec metadata');
+  }
+
+  static ScrcpySessionConfiguration _withVideo(
+    ScrcpySessionConfiguration configuration, {
+    required String? encoder,
+    required bool lowLatency,
+  }) => ScrcpySessionConfiguration(
+    deviceSerial: configuration.deviceSerial,
+    video: ScrcpyVideoOptions(
+      maxSize: configuration.video.maxSize,
+      maxFps: configuration.video.maxFps,
+      bitRate: configuration.video.bitRate,
+      codec: configuration.video.codec,
+      encoder: encoder,
+      lowLatency: lowLatency,
+    ),
+    controlEnabled: configuration.controlEnabled,
+    audioEnabled: configuration.audioEnabled,
+    audioRequired: configuration.audioRequired,
+    audio: configuration.audio,
+    displaySource: configuration.displaySource,
+    reconnectPolicy: configuration.reconnectPolicy,
+  );
 }
 
 final class ScrcpyRuntimeInfo {

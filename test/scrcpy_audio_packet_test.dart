@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 void main() {
-  test('accepts all scrcpy 4.1 audio codec identifiers', () {
+  test('accepts all scrcpy 5.0.1 audio codec identifiers', () {
     for (final selected in ScrcpyAudioCodec.values) {
       ScrcpyAudioCodecInfo? codec;
       final parser = ScrcpyAudioPacketParser(

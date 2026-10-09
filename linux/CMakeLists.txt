@@ -38,8 +38,8 @@ file(MAKE_DIRECTORY "${RESOURCE_DIR}")
 configure_file("third_party/platform-tools/adb" "${RESOURCE_DIR}/adb" COPYONLY)
 configure_file("third_party/platform-tools/NOTICE.txt"
   "${RESOURCE_DIR}/platform-tools-NOTICE.txt" COPYONLY)
-configure_file("third_party/scrcpy/scrcpy-server-v4.1"
-  "${RESOURCE_DIR}/scrcpy-server-v4.1" COPYONLY)
+configure_file("third_party/scrcpy/scrcpy-server-v5.0.1"
+  "${RESOURCE_DIR}/scrcpy-server-v5.0.1" COPYONLY)
 configure_file("third_party/scrcpy/LICENSE"
   "${RESOURCE_DIR}/scrcpy-LICENSE" COPYONLY)
 file(CHMOD "${RESOURCE_DIR}/adb"
@@ -49,7 +49,7 @@ file(CHMOD "${RESOURCE_DIR}/adb"
 set(scrcpy_flutter_bundled_libraries
   "${RESOURCE_DIR}/adb"
   "${RESOURCE_DIR}/platform-tools-NOTICE.txt"
-  "${RESOURCE_DIR}/scrcpy-server-v4.1"
+  "${RESOURCE_DIR}/scrcpy-server-v5.0.1"
   "${RESOURCE_DIR}/scrcpy-LICENSE"
   PARENT_SCOPE
 )

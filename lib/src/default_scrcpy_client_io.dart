@@ -7,9 +7,9 @@ import 'android_native_adb_client.dart';
 import 'android_scrcpy_video_connector.dart';
 import 'scrcpy_client.dart';
 
-const bundledScrcpyServerVersion = '4.1';
+const bundledScrcpyServerVersion = '5.0.1';
 const bundledScrcpyServerSha256 =
-    'deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae';
+    '764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536';
 
 ScrcpyClient createDefaultScrcpyClient({
   String? adbExecutablePath,
@@ -48,18 +48,18 @@ String resolveBundledScrcpyServerExecutable() {
   final candidates = switch (Platform.operatingSystem) {
     'linux' => <String>[
       '${executableDirectory.path}${Platform.pathSeparator}lib'
-          '${Platform.pathSeparator}scrcpy-server-v4.1',
+          '${Platform.pathSeparator}scrcpy-server-v5.0.1',
     ],
     'macos' => <String>[
       '${executableDirectory.parent.path}${Platform.pathSeparator}Resources'
           '${Platform.pathSeparator}scrcpy_flutter_resources.bundle'
-          '${Platform.pathSeparator}scrcpy-server-v4.1',
+          '${Platform.pathSeparator}scrcpy-server-v5.0.1',
       '${executableDirectory.parent.path}${Platform.pathSeparator}Resources'
-          '${Platform.pathSeparator}scrcpy-server-v4.1',
+          '${Platform.pathSeparator}scrcpy-server-v5.0.1',
     ],
     _ => <String>[
       '${executableDirectory.path}${Platform.pathSeparator}'
-          'scrcpy-server-v4.1',
+          'scrcpy-server-v5.0.1',
     ],
   };
   for (final candidate in candidates) {

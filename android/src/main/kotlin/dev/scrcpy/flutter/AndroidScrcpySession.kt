@@ -322,7 +322,7 @@ internal class AndroidScrcpySession(
                 } else null
                 val serverArguments = mutableListOf(
                     "CLASSPATH=${shellQuote(remotePath)}",
-                    "app_process", "/", "com.genymobile.scrcpy.Server", "4.1",
+                    "app_process", "/", "com.genymobile.scrcpy.Server", "5.0.1",
                     "scid=$id", "log_level=info", "tunnel_forward=true",
                     "video=true", "audio=${arguments["audio"] == true}",
                     "control=${arguments["control"] != false}",

@@ -42,17 +42,17 @@
 4. 构建 Windows example，确认四个文件出现在 Runner 输出目录。
 5. 在没有配置系统 ADB/PATH 的环境执行版本、设备发现、连接和配对回归。
 
-## scrcpy server 4.1
+## scrcpy server 5.0.1
 
-- 来源：Genymobile 官方 `v4.1` GitHub Release 的 `scrcpy-server-v4.1`。
-- 上游提交：tag `v4.1`，release commit `2926c06`。
-- 打包位置：`windows/third_party/scrcpy/scrcpy-server-v4.1`。
+- 来源：Genymobile 官方 `v5.0.1` GitHub Release 的 `scrcpy-server-v5.0.1`。
+- 上游提交：tag `v5.0.1`，release commit `a60891a`。
+- 打包位置：`windows/third_party/scrcpy/scrcpy-server-v5.0.1`。
 - 运行时位置：Windows 构建复制到宿主可执行文件目录。
 - 许可证：Apache License 2.0，随包保留 `windows/third_party/scrcpy/LICENSE`。
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `scrcpy-server-v4.1` | `DEACB991ED2509715160FFDC7907E47B4160EB30D1566217E9047FD5B8850CAE` |
+| `scrcpy-server-v5.0.1` | `764EB6F79811D5211FE9DF341120882BA9994C7A61B897D7BF3FB662E53BC536` |
 | `LICENSE` | `01C12035BF35AF37241298DC7AD538EB2A07E5C940437BC6876FEEAA9D1951D0` |
 
 server 升级必须同步修改协议 fixture、启动参数、资源文件名、校验值和真机回归基线。

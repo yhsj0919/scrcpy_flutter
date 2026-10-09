@@ -9,10 +9,10 @@ import 'package:scrcpy_flutter/src/scrcpy_video_connection_io.dart';
 void main() {
   test('bundled desktop resources match their recorded checksums', () async {
     final expected = <String, String>{
-      'windows/third_party/scrcpy/scrcpy-server-v4.1':
+      'windows/third_party/scrcpy/scrcpy-server-v5.0.1':
           bundledScrcpyServerSha256,
-      'linux/third_party/scrcpy/scrcpy-server-v4.1': bundledScrcpyServerSha256,
-      'macos/third_party/scrcpy/scrcpy-server-v4.1': bundledScrcpyServerSha256,
+      'linux/third_party/scrcpy/scrcpy-server-v5.0.1': bundledScrcpyServerSha256,
+      'macos/third_party/scrcpy/scrcpy-server-v5.0.1': bundledScrcpyServerSha256,
       'linux/third_party/platform-tools/adb':
           'a902be8f45c6c62e76c9efaf6947a0fa747c9cabd89a2ac8e0d16ecb30b3ed01',
       'macos/third_party/platform-tools/adb':

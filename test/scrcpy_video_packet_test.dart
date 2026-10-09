@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:scrcpy_flutter/scrcpy_advanced.dart';
 
 void main() {
-  test('accepts all scrcpy 4.1 video codec identifiers', () {
+  test('accepts all scrcpy 5.0.1 video codec identifiers', () {
     for (final codecId in <int>[
       ScrcpyVideoCodecInfo.h264,
       ScrcpyVideoCodecInfo.h265,

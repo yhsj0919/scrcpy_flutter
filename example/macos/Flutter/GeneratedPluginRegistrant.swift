@@ -10,4 +10,3 @@ import scrcpy_flutter
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   ScrcpyFlutterPlugin.register(with: registry.registrar(forPlugin: "ScrcpyFlutterPlugin"))
 }
-

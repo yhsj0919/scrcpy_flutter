@@ -64,7 +64,7 @@ set(scrcpy_flutter_bundled_libraries
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/platform-tools/AdbWinApi.dll"
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/platform-tools/AdbWinUsbApi.dll"
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/platform-tools/NOTICE.txt"
-  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/scrcpy/scrcpy-server-v4.1"
+  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/scrcpy/scrcpy-server-v5.0.1"
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/scrcpy/LICENSE"
   PARENT_SCOPE
 )

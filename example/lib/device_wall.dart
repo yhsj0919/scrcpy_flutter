@@ -759,9 +759,9 @@ final class _DeviceWallQualityProfile {
   final double bitRateMbps;
 
   static const defaults = _DeviceWallQualityProfile(
-    maxSize: 1280,
-    maxFps: 30,
-    bitRateMbps: 4,
+    maxSize: 720,
+    maxFps: 20,
+    bitRateMbps: 1,
   );
 
   int get bitRate => (bitRateMbps * 1000000).round();
@@ -859,6 +859,7 @@ class _DeviceWallTileState extends State<_DeviceWallTile> {
       maxSize: qualityProfile.maxSize,
       maxFps: qualityProfile.maxFps,
       bitRate: qualityProfile.bitRate,
+      lowLatency: false,
     ),
     // Android playback capture belongs to the physical device, not to a
     // display. Its main-screen session owns the single shared audio stream.
