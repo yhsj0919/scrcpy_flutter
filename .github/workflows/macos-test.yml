@@ -30,30 +30,35 @@ jobs:
         run: flutter analyze
       - name: Test
         run: flutter test
-      - name: Build macOS debug application
+      - name: Build macOS universal application
         working-directory: example
         shell: bash
         run: |
           set -o pipefail
-          flutter build macos --debug -v 2>&1 | tee "$RUNNER_TEMP/macos-build.log"
+          flutter config --no-enable-macos-arm64-only
+          flutter build macos --release -v 2>&1 | tee "$RUNNER_TEMP/macos-build.log"
       - name: Package application
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/macos-test"
-          cp -R example/build/macos/Build/Products/Debug/scrcpy_flutter_example.app "$RUNNER_TEMP/macos-test/"
+          cp -R example/build/macos/Build/Products/Release/scrcpy_flutter_example.app "$RUNNER_TEMP/macos-test/"
           cp tools/macos-test.command "$RUNNER_TEMP/macos-test/"
           chmod +x "$RUNNER_TEMP/macos-test/macos-test.command"
           resources="$RUNNER_TEMP/macos-test/scrcpy_flutter_example.app/Contents/Frameworks/scrcpy_flutter.framework/Resources/scrcpy_flutter_resources.bundle/Contents/Resources"
           chmod +x "$resources/adb"
           "$resources/adb" version
           shasum -a 256 "$resources/scrcpy-server-v5.0.1"
-          lipo -archs "$RUNNER_TEMP/macos-test/scrcpy_flutter_example.app/Contents/MacOS/scrcpy_flutter_example"
+          app="$RUNNER_TEMP/macos-test/scrcpy_flutter_example.app"
+          for binary in "$app/Contents/MacOS/scrcpy_flutter_example" "$app/Contents/Frameworks/App.framework/App" "$app/Contents/Frameworks/FlutterMacOS.framework/FlutterMacOS" "$app/Contents/Frameworks/scrcpy_flutter.framework/scrcpy_flutter" "$resources/adb"; do
+            lipo -archs "$binary"
+            lipo "$binary" -verify_arch arm64 x86_64
+          done
           ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/macos-test" "$RUNNER_TEMP/macos-test.zip"
       - name: Upload test package
         uses: actions/upload-artifact@v4
         with:
-          name: macos-test
+          name: macos-test-universal
           path: ${{ runner.temp }}/macos-test.zip
           if-no-files-found: error
       - name: Upload build log
