@@ -82,6 +82,7 @@ public final class ScrcpyFlutterPlugin: NSObject, FlutterPlugin {
           switch outcome {
           case .success(let frames): result(frames)
           case .failure(let error):
+            NSLog("[scrcpy] Recording failed: %@", String(describing: error))
             result(FlutterError(
               code: "recording_failure",
               message: String(describing: error),
@@ -92,6 +93,7 @@ public final class ScrcpyFlutterPlugin: NSObject, FlutterPlugin {
         result(FlutterMethodNotImplemented)
       }
     } catch {
+      NSLog("[scrcpy] Video request %@ failed: %@", call.method, String(describing: error))
       result(FlutterError(code: "video_error", message: String(describing: error), details: nil))
     }
   }
@@ -358,6 +360,10 @@ private final class MacOSVideoTexture: NSObject, FlutterTexture {
     ]
     var callback = VTDecompressionOutputCallbackRecord(
       decompressionOutputCallback: { reference, _, status, _, imageBuffer, _, _ in
+        if status != noErr {
+          NSLog("[scrcpy] VideoToolbox output failed: %d", status)
+          return
+        }
         guard status == noErr, let reference, let imageBuffer else { return }
         let video = Unmanaged<MacOSVideoTexture>.fromOpaque(reference).takeUnretainedValue()
         video.didDecode(imageBuffer)

@@ -54,6 +54,7 @@ final class MacOSAudioPlugin: NSObject, FlutterPlugin {
         result(FlutterMethodNotImplemented)
       }
     } catch {
+      NSLog("[scrcpy] Audio request %@ failed: %@", call.method, String(describing: error))
       result(self.error("native_audio_error", String(describing: error)))
     }
   }
