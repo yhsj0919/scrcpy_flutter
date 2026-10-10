@@ -469,6 +469,12 @@ String resolveBundledAdbExecutable({String? applicationExecutablePath}) {
       '${executableDirectory.path}${Platform.pathSeparator}adb',
     ],
     'macos' => <String>[
+      '${executableDirectory.parent.path}${Platform.pathSeparator}Frameworks'
+          '${Platform.pathSeparator}scrcpy_flutter.framework'
+          '${Platform.pathSeparator}Resources'
+          '${Platform.pathSeparator}scrcpy_flutter_resources.bundle'
+          '${Platform.pathSeparator}Contents${Platform.pathSeparator}Resources'
+          '${Platform.pathSeparator}adb',
       '${executableDirectory.parent.path}${Platform.pathSeparator}Resources'
           '${Platform.pathSeparator}scrcpy_flutter_resources.bundle'
           '${Platform.pathSeparator}adb',
