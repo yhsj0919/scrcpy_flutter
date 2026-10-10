@@ -242,7 +242,7 @@ private final class MacOSVideoTexture: NSObject, FlutterTexture {
     let status = VTDecompressionSessionDecodeFrame(
       decompressionSession,
       sampleBuffer: sampleBuffer,
-      flags: [.enableAsynchronousDecompression],
+      flags: [._EnableAsynchronousDecompression],
       frameRefcon: nil,
       infoFlagsOut: &infoFlags)
     guard status == noErr else { throw VideoError.videoToolbox(status) }
