@@ -113,10 +113,10 @@ private final class MacOSOpusPlayer {
       mReserved: 0)
     guard let inputFormat = AVAudioFormat(streamDescription: &inputDescription),
           let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
+            commonFormat: .pcmFormatFloat32,
             sampleRate: 48_000,
             channels: 2,
-            interleaved: true),
+            interleaved: false),
           let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
       throw AudioFailure.opusUnavailable
     }
@@ -180,13 +180,14 @@ private final class MacOSOpusPlayer {
     }
 
     var peak: Int64 = 0
-    if let samples = pcm.int16ChannelData?.pointee {
-      let count = Int(pcm.frameLength) * Int(outputFormat.channelCount)
-      for index in 0..<count {
-        peak = max(peak, Int64(abs(Int32(samples[index]))))
+    if let channels = pcm.floatChannelData {
+      for channel in 0..<Int(outputFormat.channelCount) {
+        for frame in 0..<Int(pcm.frameLength) {
+          peak = max(peak, Int64(abs(channels[channel][frame]) * 32768))
+        }
       }
     }
-    let byteCount = Int64(pcm.frameLength) * 4
+    let byteCount = Int64(pcm.frameLength) * Int64(outputFormat.channelCount) * 4
     lock.lock()
     if closed {
       lock.unlock()
