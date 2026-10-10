@@ -174,10 +174,12 @@ private final class MacOSOpusPlayer {
       inputStatus.pointee = .haveData
       return compressed
     }
-    guard status == .haveData, pcm.frameLength > 0 else {
+    if status == .error {
       if let conversionError { throw conversionError }
       throw AudioFailure.decodeFailed(status.rawValue)
     }
+    // inputRanDry can still contain decoded frames from the supplied packet.
+    guard pcm.frameLength > 0 else { return }
 
     var peak: Int64 = 0
     if let channels = pcm.floatChannelData {
