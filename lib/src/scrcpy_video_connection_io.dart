@@ -172,7 +172,7 @@ final class _IoScrcpyVideoConnector implements ScrcpyVideoConnector {
       final serverOutput = BytesBuilder(copy: false);
       void collectServerOutput(List<int> data) {
         serverOutput.add(data);
-        if (kDebugMode) {
+        if (kDebugMode || const bool.fromEnvironment('SCRCPY_DIAGNOSTICS')) {
           final line = utf8.decode(data, allowMalformed: true).trim();
           if (line.isNotEmpty) debugPrint('scrcpy server: $line');
         }
@@ -382,8 +382,9 @@ final class _ReadySocket {
 
   final _ByteTransport _transport;
   final Completer<bool> _ready = Completer<bool>();
-  final StreamController<Uint8List> _chunks =
-      StreamController<Uint8List>(sync: true);
+  final StreamController<Uint8List> _chunks = StreamController<Uint8List>(
+    sync: true,
+  );
 
   Future<bool> get ready => _ready.future;
   Stream<Uint8List> get chunks => _chunks.stream;
@@ -534,7 +535,6 @@ final class _IoScrcpyVideoConnection implements ScrcpyVideoConnection {
 
   @override
   final ScrcpyVideoConnectionInfo info;
-
 
   @override
   Future<ScrcpyVideoCodecInfo> get codec => _codec.future;

@@ -48,6 +48,9 @@ final class _NativeScrcpyAudioController extends ChangeNotifier
     );
     try {
       final codec = await _audio.codec.timeout(const Duration(seconds: 5));
+      if (const bool.fromEnvironment('SCRCPY_DIAGNOSTICS')) {
+        debugPrint('scrcpy audio: metadata received; creating player');
+      }
       if (codec == null) {
         throw const ScrcpyException(
           ScrcpyErrorCode.unsupportedCapability,
@@ -69,6 +72,9 @@ final class _NativeScrcpyAudioController extends ChangeNotifier
         throw StateError('Native audio backend did not create a player');
       }
       _audioId = audioId;
+      if (const bool.fromEnvironment('SCRCPY_DIAGNOSTICS')) {
+        debugPrint('scrcpy audio: player $audioId created');
+      }
       await _channel.invokeMethod<void>('setMuted', <String, Object>{
         'audioId': audioId,
         'muted': _value.muted,

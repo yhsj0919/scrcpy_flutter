@@ -343,6 +343,9 @@ final class ScrcpyRawSession extends ChangeNotifier {
     ScrcpyAudioController? audio;
     try {
       await video.start();
+      if (const bool.fromEnvironment('SCRCPY_DIAGNOSTICS')) {
+        debugPrint('scrcpy media: video controller ready');
+      }
       final stream = connection.audio;
       if (configuration.audioEnabled &&
           connection is ScrcpyAudioControllerProvider) {
@@ -359,7 +362,8 @@ final class ScrcpyRawSession extends ChangeNotifier {
           await audio.setVolume(configuration.audio.initialVolume);
           await audio.setMuted(configuration.audio.initiallyMuted);
           await audio.start();
-        } catch (_) {
+        } catch (error, stackTrace) {
+          debugPrint('scrcpy audio startup failed: $error\n$stackTrace');
           audio.dispose();
           audio = null;
           if (configuration.audioRequired) rethrow;
@@ -375,6 +379,9 @@ final class ScrcpyRawSession extends ChangeNotifier {
       _video = video;
       _audio = audio;
       _mediaConnection = connection;
+      if (const bool.fromEnvironment('SCRCPY_DIAGNOSTICS')) {
+        debugPrint('scrcpy media: session media ready');
+      }
       notifyListeners();
     } catch (_) {
       await audio?.stop();
@@ -724,10 +731,7 @@ final class ScrcpyRawSession extends ChangeNotifier {
       _mdnsServiceName = selected.name;
       final endpoint = selected.endpoint;
       if (endpoint.authority == previous.authority) return;
-      await adb.connect(
-        endpoint,
-        cancellationToken: cancellationToken,
-      );
+      await adb.connect(endpoint, cancellationToken: cancellationToken);
       _deviceSerial = endpoint.authority;
     } on AdbException catch (error) {
       if (error.code == AdbErrorCode.cancelled) rethrow;

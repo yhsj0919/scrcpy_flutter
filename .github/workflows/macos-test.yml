@@ -36,7 +36,7 @@ jobs:
         run: |
           set -o pipefail
           flutter config --no-enable-macos-arm64-only
-          flutter build macos --release -v 2>&1 | tee "$RUNNER_TEMP/macos-build.log"
+          flutter build macos --release --dart-define=SCRCPY_DIAGNOSTICS=true -v 2>&1 | tee "$RUNNER_TEMP/macos-build.log"
       - name: Package application
         shell: bash
         run: |

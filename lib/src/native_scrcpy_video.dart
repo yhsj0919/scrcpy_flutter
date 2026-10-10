@@ -150,6 +150,11 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
     _setValue(const ScrcpyVideoState(status: ScrcpyVideoStatus.buffering));
     try {
       final codec = await _connection.codec.timeout(const Duration(seconds: 5));
+      if (const bool.fromEnvironment('SCRCPY_DIAGNOSTICS')) {
+        debugPrint(
+          'scrcpy video: metadata ${codec.width}x${codec.height}; creating texture',
+        );
+      }
       if (!codec.isH264) {
         throw ScrcpyException(
           ScrcpyErrorCode.unsupportedCapability,
@@ -169,6 +174,9 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
         throw StateError('Native video backend did not create a texture');
       }
       _textureId = textureId;
+      if (const bool.fromEnvironment('SCRCPY_DIAGNOSTICS')) {
+        debugPrint('scrcpy video: texture $textureId created');
+      }
       _subscription = _connection.packets.listen(
         (packet) {
           final activeTextureId = _textureId;
@@ -306,7 +314,8 @@ final class _NativeScrcpyVideoController extends ChangeNotifier
   Future<void> _decode(int textureId, ScrcpyVideoPacket packet) async {
     try {
       _packetCount++;
-      if (kDebugMode && _packetCount <= 5) {
+      if ((kDebugMode || const bool.fromEnvironment('SCRCPY_DIAGNOSTICS')) &&
+          _packetCount <= 5) {
         debugPrint(
           'scrcpy packet: bytes=${packet.data.length} '
           'config=${packet.isConfig} key=${packet.isKeyFrame} '
