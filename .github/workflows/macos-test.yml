@@ -21,6 +21,11 @@ jobs:
         run: |
           flutter --version
           xcodebuild -version
+      - name: Resolve package dependencies
+        run: |
+          flutter pub get
+          (cd packages/adb_client && dart pub get)
+          (cd packages/adb_client_process && dart pub get)
       - name: Analyze
         run: flutter analyze
       - name: Test
